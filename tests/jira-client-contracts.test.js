@@ -40,11 +40,80 @@ describe('Jira REST write contracts', () => {
   const writes = [
     ['issue edit', 'PUT', '/issue/TEST-1', client => client.updateIssue('TEST-1', { fields: { summary: 'Updated' } })],
     ['issue delete', 'DELETE', '/issue/TEST-1', client => client.deleteIssue('TEST-1')],
+    ['issue transition', 'POST', '/issue/TEST-1/transitions', client => client.transitionIssue('TEST-1', '21')],
     ['comment edit', 'PUT', '/issue/TEST-1/comment/10000', client => client.updateComment('TEST-1', '10000', 'Updated')],
     ['comment delete', 'DELETE', '/issue/TEST-1/comment/10000', client => client.deleteComment('TEST-1', '10000')],
     ['remote link edit', 'PUT', '/issue/TEST-1/remotelink/10000', client => client.updateRemoteLink('TEST-1', '10000', { object: { title: 'Updated' } })],
     ['remote link delete', 'DELETE', '/issue/TEST-1/remotelink/10000', client => client.deleteRemoteLink('TEST-1', '10000')]
   ];
+
+  test.each([2, 3])('gets available transitions using Jira API v%i', async version => {
+    const client = createClient(version);
+    reply.mockReturnValue({
+      status: 200,
+      body: { transitions: [{ id: '21', name: 'Start Progress', to: { name: 'In Progress' } }] }
+    });
+
+    const transitions = await client.getTransitions('TEST-1');
+
+    expect(requests).toEqual([{
+      method: 'GET', url: `/rest/api/${version}/issue/TEST-1/transitions`, data: undefined
+    }]);
+    expect(transitions).toEqual([
+      { id: '21', name: 'Start Progress', to: { name: 'In Progress' } }
+    ]);
+  });
+
+  test.each([2, 3])('transitions an issue using Jira API v%i', async version => {
+    const client = createClient(version);
+    reply.mockReturnValue({ status: 204, body: '' });
+
+    await client.transitionIssue('TEST-1', 21);
+
+    expect(requests).toEqual([{
+      method: 'POST', url: `/rest/api/${version}/issue/TEST-1/transitions`,
+      data: { transition: { id: '21' } }
+    }]);
+  });
+
+  test('does not retry or replay a transition when the first API version rejects it', async () => {
+    const client = createClient();
+    reply.mockReturnValue({ status: 404, body: { errorMessages: ['Transition unavailable'] } });
+
+    await expect(client.transitionIssue('TEST-1', '21')).rejects.toMatchObject({ status: 404 });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      method: 'POST', url: '/rest/api/3/issue/TEST-1/transitions',
+      data: { transition: { id: '21' } }
+    });
+  });
+
+  test('does not report success for a transition that receives an HTML response', async () => {
+    const client = createClient();
+    reply.mockReturnValue({
+      status: 200,
+      headers: { 'Content-Type': 'text/html' },
+      body: '<html>Login required</html>'
+    });
+
+    await expect(client.transitionIssue('TEST-1', '21')).rejects.toThrow(
+      'Jira returned a non-JSON response; transition success could not be confirmed.'
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].method).toBe('POST');
+  });
+
+  test('does not retry a transition after a retryable server failure', async () => {
+    const client = createClient();
+    reply.mockReturnValue({ status: 503, body: { errorMessages: ['Unavailable'] } });
+
+    await expect(client.transitionIssue('TEST-1', '21')).rejects.toMatchObject({ status: 503 });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].method).toBe('POST');
+  });
 
   describe.each([2, 3])('auto mode currently using v%i', version => {
     test.each(writes)('%s sends exactly one request after a real HTTP 204', async (_name, method, path, write) => {

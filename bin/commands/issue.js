@@ -2,6 +2,7 @@ const { Command } = require('commander');
 const crud = require('./issue/crud');
 const comment = require('./issue/comment');
 const link = require('./issue/link');
+const transition = require('./issue/transition');
 
 function createIssueCommand(factory) {
   const command = new Command('issue')
@@ -11,6 +12,7 @@ function createIssueCommand(factory) {
   crud.register(command, factory);
   comment.register(command, factory);
   link.register(command, factory);
+  transition.register(command, factory);
 
   return command;
 }

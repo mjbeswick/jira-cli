@@ -96,6 +96,16 @@ describe('Utils', () => {
       expect(typeof table.toString).toBe('function');
     });
 
+    it('preserves long Jira issue keys in the rendered table', () => {
+      const key = 'TILLUI2-4579';
+      const table = Utils.createIssuesTable([{
+        key,
+        fields: { summary: 'React Router investigation' }
+      }]);
+
+      expect(table.toString()).toContain(key);
+    });
+
     it('should handle empty issues array', () => {
       const table = Utils.createIssuesTable([]);
 

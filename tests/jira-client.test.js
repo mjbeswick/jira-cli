@@ -264,7 +264,7 @@ describe('JiraClient', () => {
           jql: 'project = TEST',
           startAt: 0,
           maxResults: 50,
-          fields: ['summary', 'status', 'assignee', 'created', 'updated']
+          fields: ['summary', 'status', 'assignee', 'priority', 'created', 'updated']
         }
       });
       expect(result).toEqual(mockSearch);

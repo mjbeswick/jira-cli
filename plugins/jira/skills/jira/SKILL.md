@@ -193,7 +193,7 @@ jira --profile work issue list   # one-off override, doesn't change the active p
 List issues with filtering.
 
 ```sh
-jira issue list [--project <project>] [--assignee <assignee>] [--status <status>] [--type <type>] [--reporter <reporter>] [--priority <priority>] [--created <date>] [--updated <date>] [--limit <limit>] [--jql <query>]
+jira issue list [--project <project>] [--assignee <assignee>] [--status <status>] [--type <type>] [--reporter <reporter>] [--priority <priority>] [--created <date>] [--updated <date>] [--limit <limit>] [--jql <query>] [--format table|json]
 ```
 
 Important options:
@@ -210,11 +210,13 @@ Important options:
 | `--updated <date>` | Updated since date |
 | `--limit <limit>` | Result limit |
 | `--jql <query>` | Extra JQL expression |
+| `--format table|json` | Output format; JSON preserves full issue keys for automation |
 
 ```sh
 jira issue list
 jira issue list --assignee=currentUser --status=Open
 jira issue list --project=TEST --type=Bug --limit=50
+jira issue list --jql 'assignee = currentUser' --format json
 ```
 
 ### `issue view <key>`
@@ -271,6 +273,21 @@ jira issue edit <key> [--summary <summary>] [--description <text>] [--descriptio
 ```sh
 jira issue edit PROJ-123 --summary "Updated summary"
 jira issue edit PROJ-123 --description-file ./new-description.md
+```
+
+### `issue transition <key>`
+
+Transition an issue using one of the workflow transitions currently available to it. Match an exact
+transition ID, destination status, or transition name. Text matching is case-insensitive; ambiguous
+matches must be disambiguated with the transition ID.
+
+```bash
+jira issue transition <key> --to <status>
+
+# Example
+jira issue transition PROJ-123 --to "In Progress"
+jira issue transition PROJ-123 --to "Start Progress"
+jira issue transition PROJ-123 --to 21
 ```
 
 ### `issue delete <key>`

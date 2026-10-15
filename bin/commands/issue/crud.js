@@ -1,4 +1,5 @@
 const chalk = require('chalk');
+const { Option } = require('commander');
 const fs = require('fs');
 const path = require('path');
 const {
@@ -22,16 +23,35 @@ async function listIssues(client, io, options) {
     spinner.stop();
 
     if (result.issues.length === 0) {
-      io.info('No issues found');
+      if (options.format === 'json') {
+        io.out(JSON.stringify({ total: result.total || 0, issues: [] }, null, 2));
+      } else {
+        io.info('No issues found');
+      }
       return;
     }
 
-    io.out(chalk.bold(`\nFound ${result.issues.length} issues (showing ${Math.min(result.issues.length, limit)}):\n`));
+    if (options.format === 'json') {
+      io.out(JSON.stringify({
+        total: result.total,
+        issues: result.issues.map(issue => ({
+          key: issue.key,
+          summary: issue.fields.summary,
+          status: issue.fields.status?.name,
+          assignee: issue.fields.assignee?.displayName || null,
+          priority: issue.fields.priority?.name || null,
+          created: issue.fields.created,
+          updated: issue.fields.updated
+        }))
+      }, null, 2));
+    } else {
+      io.out(chalk.bold(`\nFound ${result.issues.length} issues (showing ${Math.min(result.issues.length, limit)}):\n`));
 
-    const table = createIssuesTable(result.issues);
-    io.out(table.toString());
+      const table = createIssuesTable(result.issues);
+      io.out(table.toString());
+    }
 
-    if (result.total > result.issues.length) {
+    if (options.format !== 'json' && result.total > result.issues.length) {
       io.info(`Showing ${result.issues.length} of ${result.total} total issues`);
     }
 
@@ -237,6 +257,9 @@ function register(command, factory) {
     .option('--created <date>', 'created since date (e.g., -7d, 2023-01-01)')
     .option('--updated <date>', 'updated since date (e.g., -7d, 2023-01-01)')
     .option('--limit <limit>', 'limit number of results (default: 20)', '20')
+    .addOption(new Option('--format <format>', 'output format (table, json)')
+      .choices(['table', 'json'])
+      .default('table'))
     .option('--jql <query>', 'custom JQL expression, AND-composed with other filters')
     .action(async (options) => {
       const io = factory.getIOStreams();

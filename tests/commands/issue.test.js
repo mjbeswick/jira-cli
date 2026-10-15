@@ -84,6 +84,114 @@ describe('IssueCommand', () => {
 
       const commentCommand = commands.find(cmd => cmd.name() === 'comment');
       expect(commentCommand).toBeDefined();
+
+      const transitionCommand = commands.find(cmd => cmd.name() === 'transition');
+      expect(transitionCommand).toBeDefined();
+      expect(transitionCommand.aliases()).toContain('move');
+    });
+  });
+
+  describe('transition command execution', () => {
+    let exitSpy;
+
+    beforeEach(() => {
+      exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      exitSpy.mockRestore();
+    });
+
+    it('transitions by destination status name, ignoring case', async () => {
+      mockJiraClient.getTransitions.mockResolvedValue([
+        { id: '21', name: 'Start Progress', to: { name: 'In Progress' } }
+      ]);
+
+      await issueCommand.parseAsync([
+        'node', 'jira', 'transition', 'PROJ-123', '--to', 'in progress'
+      ]);
+
+      expect(mockJiraClient.getTransitions).toHaveBeenCalledWith('PROJ-123');
+      expect(mockJiraClient.transitionIssue).toHaveBeenCalledWith('PROJ-123', '21');
+      expect(mockIOStreams.success).toHaveBeenCalledWith('PROJ-123 moved to In Progress');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects a status not reachable from the issue', async () => {
+      mockJiraClient.getTransitions.mockResolvedValue([
+        { id: '31', name: 'Resolve Issue', to: { name: 'Done' } }
+      ]);
+
+      await issueCommand.parseAsync([
+        'node', 'jira', 'transition', 'PROJ-123', '--to', 'In Progress'
+      ]);
+
+      expect(mockJiraClient.transitionIssue).not.toHaveBeenCalled();
+      expect(mockIOStreams.error).toHaveBeenCalledWith(
+        expect.stringContaining('No available transition matches "In Progress"')
+      );
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('rejects ambiguous transitions to the same status', async () => {
+      mockJiraClient.getTransitions.mockResolvedValue([
+        { id: '21', name: 'Start Progress', to: { name: 'In Progress' } },
+        { id: '22', name: 'Resume Work', to: { name: 'In Progress' } }
+      ]);
+
+      await issueCommand.parseAsync([
+        'node', 'jira', 'transition', 'PROJ-123', '--to', 'In Progress'
+      ]);
+
+      expect(mockJiraClient.transitionIssue).not.toHaveBeenCalled();
+      expect(mockIOStreams.error).toHaveBeenCalledWith(
+        expect.stringContaining('Transition "In Progress" is ambiguous')
+      );
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('transitions by exact transition name', async () => {
+      mockJiraClient.getTransitions.mockResolvedValue([
+        { id: '21', name: 'Start Progress', to: { name: 'In Progress' } }
+      ]);
+
+      await issueCommand.parseAsync([
+        'node', 'jira', 'transition', 'PROJ-123', '--to', 'start progress'
+      ]);
+
+      expect(mockJiraClient.transitionIssue).toHaveBeenCalledWith('PROJ-123', '21');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('uses an exact transition ID to disambiguate duplicate destinations', async () => {
+      mockJiraClient.getTransitions.mockResolvedValue([
+        { id: '21', name: 'Start Progress', to: { name: 'In Progress' } },
+        { id: '22', name: 'Resume Work', to: { name: 'In Progress' } }
+      ]);
+
+      await issueCommand.parseAsync([
+        'node', 'jira', 'transition', 'PROJ-123', '--to', '22'
+      ]);
+
+      expect(mockJiraClient.transitionIssue).toHaveBeenCalledWith('PROJ-123', '22');
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('reports Jira API failures without claiming success', async () => {
+      mockJiraClient.getTransitions.mockResolvedValue([
+        { id: '21', name: 'Start Progress', to: { name: 'In Progress' } }
+      ]);
+      mockJiraClient.transitionIssue.mockRejectedValue(new Error('Transition denied'));
+
+      await issueCommand.parseAsync([
+        'node', 'jira', 'transition', 'PROJ-123', '--to', 'In Progress'
+      ]);
+
+      expect(mockIOStreams.success).not.toHaveBeenCalled();
+      expect(mockIOStreams.error).toHaveBeenCalledWith(
+        'Failed to transition issue: Transition denied'
+      );
+      expect(exitSpy).toHaveBeenCalledWith(1);
     });
   });
 
@@ -456,6 +564,10 @@ describe('IssueCommand', () => {
       const assigneeOption = listCommand.options.find(opt => opt.long === '--assignee');
       expect(assigneeOption).toBeDefined();
 
+      const formatOption = listCommand.options.find(opt => opt.long === '--format');
+      expect(formatOption).toBeDefined();
+      expect(formatOption.defaultValue).toBe('table');
+
       const statusOption = listCommand.options.find(opt => opt.long === '--status');
       expect(statusOption).toBeDefined();
     });
@@ -464,6 +576,51 @@ describe('IssueCommand', () => {
       const limitOption = listCommand.options.find(opt => opt.long === '--limit');
       expect(limitOption).toBeDefined();
       expect(limitOption.defaultValue).toBe('20');
+    });
+  });
+
+  describe('list output formats', () => {
+    it('returns complete issue keys in machine-readable JSON output', async () => {
+      mockJiraClient.searchIssues.mockResolvedValue({
+        total: 1,
+        issues: [{
+          key: 'TILLUI2-4579',
+          fields: {
+            summary: 'React Router investigation',
+            status: { name: 'In Review' },
+            assignee: { displayName: 'Michael' },
+            created: '2026-10-14T10:00:00.000Z',
+            updated: '2026-10-15T10:00:00.000Z'
+          }
+        }]
+      });
+
+      await issueCommand.parseAsync([
+        'node', 'jira', 'list', '--jql', 'assignee = currentUser', '--format', 'json'
+      ]);
+
+      const output = mockIOStreams.out.mock.calls.map(([message]) => message).join('\n');
+      const parsed = JSON.parse(output);
+      expect(parsed.issues[0]).toEqual({
+        key: 'TILLUI2-4579',
+        summary: 'React Router investigation',
+        status: 'In Review',
+        assignee: 'Michael',
+        priority: null,
+        created: '2026-10-14T10:00:00.000Z',
+        updated: '2026-10-15T10:00:00.000Z'
+      });
+    });
+
+    it('returns valid JSON when no issues are found', async () => {
+      mockJiraClient.searchIssues.mockResolvedValue({ total: 0, issues: [] });
+
+      await issueCommand.parseAsync([
+        'node', 'jira', 'list', '--jql', 'assignee = currentUser', '--format', 'json'
+      ]);
+
+      const output = mockIOStreams.out.mock.calls.map(([message]) => message).join('\n');
+      expect(JSON.parse(output)).toEqual({ total: 0, issues: [] });
     });
   });
 });

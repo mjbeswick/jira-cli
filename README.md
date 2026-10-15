@@ -352,6 +352,11 @@ jira issue edit PROJ-123 --description "Updated description"
 
 # Update description from file
 jira issue edit PROJ-123 --description-file ./updated-spec.md
+
+# Transition by destination status, transition name, or exact transition ID
+jira issue transition PROJ-123 --to "In Progress"
+jira issue transition PROJ-123 --to "Start Progress"
+jira issue transition PROJ-123 --to 21
 ```
 
 ### Search Issues
@@ -481,9 +486,10 @@ jira sprint list --board 123 --state active
 | `profile add <name>` | Create/update a profile (non-interactive) | Same flags as `config` |
 | `profile remove <name>` | Remove a profile | Refuses to remove the last remaining one |
 | `issue view <key>` | View issue details (alias: show) | `--format <terminal\|markdown>`, `--output <path>` |
-| `issue list` | List issues | `--project <key>`, `--assignee <user>`, `--reporter <user>`, `--status <status>`, `--type <type>`, `--priority <level>`, `--created <date>`, `--updated <date>`, `--jql <query>`, `--limit <number>` |
+| `issue list` | List issues | `--project <key>`, `--assignee <user>`, `--reporter <user>`, `--status <status>`, `--type <type>`, `--priority <level>`, `--created <date>`, `--updated <date>`, `--jql <query>`, `--limit <number>`, `--format table\|json` |
 | `issue create` | Create new issue | **Required:** `--project <key>`, `--type <type>`, `--summary <text>`<br>**Optional:** `--description <text>`, `--description-file <path>`, `--assignee <user>`, `--priority <level>` |
 | `issue edit <key>` | Edit an existing issue (alias: update) | **At least one required:**<br>`--summary <text>`, `--description <text>`, `--description-file <path>`, `--assignee <user>`, `--priority <level>` |
+| `issue transition <key>` | Transition an issue by exact ID, destination status, or transition name (alias: move) | **Required:** `--to <transition>` |
 | `issue delete <key>` | Delete issue | **Required:** `--force` |
 | `issue comment add <key> [text]` | Add comment to issue (alias: c) | `[text]` or `--file <path>`<br>**Optional:** `--internal` |
 | `issue comment list <key>` | List comments on issue | `--format <table\|json>` (default: table) |
@@ -539,6 +545,7 @@ jira issue view PROJ-123 --output ./issue.md
 
 # List issues with filters
 jira issue list --project PROJ --status "In Progress" --limit 10
+jira issue list --jql 'assignee = currentUser' --format json
 
 # Create new issue
 jira issue create --project PROJ --type Bug --summary "Login fails"
@@ -750,7 +757,7 @@ This project is licensed under the ISC License - see the [LICENSE](https://githu
 - [ ] Bulk operations
 - [ ] Integration with other Atlassian tools
 - [ ] Issue attachments management
-- [ ] Workflows and transitions
+- [x] Issue workflow transitions by ID, destination status, or transition name
 - [ ] Custom fields support
 - [ ] Time tracking
 
