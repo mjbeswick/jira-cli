@@ -290,6 +290,16 @@ jira issue transition PROJ-123 --to "Start Progress"
 jira issue transition PROJ-123 --to 21
 ```
 
+### `issue transitions <key>`
+
+List the workflow transitions currently available for an issue without changing its status. Use this
+to verify that a target transition is available before running `issue transition`.
+
+```sh
+jira issue transitions PROJ-123
+jira issue transitions PROJ-123 --format json
+```
+
 ### `issue delete <key>`
 
 Delete an issue.

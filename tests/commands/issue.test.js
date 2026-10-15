@@ -88,6 +88,62 @@ describe('IssueCommand', () => {
       const transitionCommand = commands.find(cmd => cmd.name() === 'transition');
       expect(transitionCommand).toBeDefined();
       expect(transitionCommand.aliases()).toContain('move');
+
+      const transitionsCommand = commands.find(cmd => cmd.name() === 'transitions');
+      expect(transitionsCommand).toBeDefined();
+      expect(transitionsCommand.description()).toContain('list workflow transitions');
+    });
+  });
+
+  describe('available transitions command execution', () => {
+    let exitSpy;
+
+    beforeEach(() => {
+      exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      exitSpy.mockRestore();
+    });
+
+    it('lists transitions without attempting to change issue status', async () => {
+      mockJiraClient.getTransitions.mockResolvedValue([
+        { id: '21', name: 'Start Progress', to: { name: 'In Progress' } }
+      ]);
+
+      await issueCommand.parseAsync(['node', 'jira', 'transitions', 'PROJ-123']);
+
+      expect(mockJiraClient.getTransitions).toHaveBeenCalledWith('PROJ-123');
+      expect(mockJiraClient.transitionIssue).not.toHaveBeenCalled();
+      expect(mockIOStreams.out).toHaveBeenCalledWith('Available transitions for PROJ-123:');
+      expect(mockIOStreams.out).toHaveBeenCalledWith(
+        'ID: 21 | Name: Start Progress | To: In Progress'
+      );
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('supports machine-readable transition output', async () => {
+      const transitions = [
+        { id: '21', name: 'Start Progress', to: { name: 'In Progress' } }
+      ];
+      mockJiraClient.getTransitions.mockResolvedValue(transitions);
+
+      await issueCommand.parseAsync([
+        'node', 'jira', 'transitions', 'PROJ-123', '--format', 'json'
+      ]);
+
+      const output = mockIOStreams.out.mock.calls.map(([message]) => message).join('\n');
+      expect(JSON.parse(output)).toEqual({ issueKey: 'PROJ-123', transitions });
+      expect(mockJiraClient.transitionIssue).not.toHaveBeenCalled();
+    });
+
+    it('reports when no transitions are available', async () => {
+      mockJiraClient.getTransitions.mockResolvedValue([]);
+
+      await issueCommand.parseAsync(['node', 'jira', 'transitions', 'PROJ-123']);
+
+      expect(mockIOStreams.info).toHaveBeenCalledWith('No available transitions for PROJ-123');
+      expect(mockJiraClient.transitionIssue).not.toHaveBeenCalled();
     });
   });
 

@@ -353,6 +353,10 @@ jira issue edit PROJ-123 --description "Updated description"
 # Update description from file
 jira issue edit PROJ-123 --description-file ./updated-spec.md
 
+# List workflow transitions currently available for an issue (read-only)
+jira issue transitions PROJ-123
+jira issue transitions PROJ-123 --format json
+
 # Transition by destination status, transition name, or exact transition ID
 jira issue transition PROJ-123 --to "In Progress"
 jira issue transition PROJ-123 --to "Start Progress"
@@ -489,6 +493,7 @@ jira sprint list --board 123 --state active
 | `issue list` | List issues | `--project <key>`, `--assignee <user>`, `--reporter <user>`, `--status <status>`, `--type <type>`, `--priority <level>`, `--created <date>`, `--updated <date>`, `--jql <query>`, `--limit <number>`, `--format table\|json` |
 | `issue create` | Create new issue | **Required:** `--project <key>`, `--type <type>`, `--summary <text>`<br>**Optional:** `--description <text>`, `--description-file <path>`, `--assignee <user>`, `--priority <level>` |
 | `issue edit <key>` | Edit an existing issue (alias: update) | **At least one required:**<br>`--summary <text>`, `--description <text>`, `--description-file <path>`, `--assignee <user>`, `--priority <level>` |
+| `issue transitions <key>` | List workflow transitions currently available for an issue (read-only) | `--format table\|json` (default: table) |
 | `issue transition <key>` | Transition an issue by exact ID, destination status, or transition name (alias: move) | **Required:** `--to <transition>` |
 | `issue delete <key>` | Delete issue | **Required:** `--force` |
 | `issue comment add <key> [text]` | Add comment to issue (alias: c) | `[text]` or `--file <path>`<br>**Optional:** `--internal` |
