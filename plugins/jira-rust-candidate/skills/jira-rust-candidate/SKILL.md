@@ -75,8 +75,11 @@ Never output or persist tokens or cookies in task logs.
    Writes are single-shot; an error is not proof that nothing was created.
 6. Read back the created issue and report the key and verified fields.
 
-Edits, comments, transitions, and deletions also need fresh explicit approval of
-their exact payload and target. List current transitions before choosing one.
+Edits, comments, transitions, flagging/unflagging, and deletions also need fresh
+explicit approval of their exact payload and target. `issue flag <key>` and
+`issue unflag <key>` inspect edit metadata and update only the Jira Software
+Flagged field; either fails if the field or Impediment value is unavailable.
+List current transitions before choosing one.
 `--force` does not replace authorization. Before adding a comment, decide whether
 it must be public or internal; `issue comment add --internal` uses the JSM
 request-comment API and fails if the response does not confirm `public: false`.

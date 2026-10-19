@@ -296,14 +296,12 @@ jira issue edit PROJ-123 --description-file ./new-description.md
 
 ### Issue flagging / impediment
 
-The published npm CLI does not currently expose a supported command or client
-operation to flag or unflag an issue as an impediment. Do not approximate this
-with `issue edit`, a guessed custom-field ID/value, raw REST, or another
-undocumented workaround. Treat flag and unflag requests as unsupported until a
-documented operation is added to the approved Jira integration. If support is
-added, each mutation must require fresh explicit approval naming the exact
-issue key and action, validate that the issue/project/type supports the
-operation, and leave unrelated issue fields unchanged.
+The published npm CLI does not expose a supported command to flag or unflag an
+issue. Use the Rust candidate CLI's documented `issue flag` / `issue unflag`
+commands only when the active workflow permits that binary. Both operations
+are writes and require fresh explicit approval of the exact issue key and
+action; do not emulate them with `issue edit`, a guessed custom-field ID/value,
+or raw REST.
 
 ### `issue transition <key>`
 

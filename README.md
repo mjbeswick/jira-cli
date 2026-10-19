@@ -23,7 +23,7 @@ Use the full-path Rust `jira --help` and `<command> --help` for exact options. R
 |---|---|
 | `config` | `show`, `set <key> <value>`, `unset <key>`, `test` |
 | `profile` | `list`, `add`, `use`, `remove` |
-| `issue` | `list`, `view`, `create-fields`, `create`, `edit`, `delete`, `transitions`, `transition` |
+| `issue` | `list`, `view`, `create-fields`, `create`, `edit`, `delete`, `flag`, `unflag`, `transitions`, `transition` |
 | `issue comment` | `list`, `add`, `edit`, `delete` |
 | `issue remote-link` | `list`, `add`, `update`, `delete` |
 | `project` | `list`, `view`, `components`, `versions` |
@@ -107,7 +107,7 @@ Prepare additional fields as JSON keyed by the returned IDs. This **illustrative
 
 Create flags also support `--assignee` (Cloud account ID or Data Center username), `--priority`, `--labels`, `--parent`, and `--due-date`; `--fields-file` covers project-specific fields. API v3 textarea strings become Atlassian Document Format, while API v2 uses plain text. For edits, use `issue edit <key> --fields-file ./changes.json` to validate against that issue's edit screen before writing.
 
-Comments can be supplied with text or `--file`. `issue comment add <key> --internal --file ./note.txt` uses Jira Service Management's request-comment API and **fails rather than posting publicly** if `public: false` is not confirmed. Transitions are checked against the issue's available transitions before writing. `--force` is required for deletion but never substitutes for user approval.
+Comments can be supplied with text or `--file`. `issue comment add <key> --internal --file ./note.txt` uses Jira Service Management's request-comment API and **fails rather than posting publicly** if `public: false` is not confirmed. Transitions are checked against the issue's available transitions before writing. `issue flag` and `issue unflag` inspect editable field metadata and only update the Jira Software Flagged field. `--force` is required for deletion but never substitutes for user approval.
 
 ## Development and release gate
 

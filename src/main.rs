@@ -189,6 +189,10 @@ enum IssueCommand {
         #[arg(long)]
         to: String,
     },
+    /// Mark an issue as an impediment using its Jira Software Flagged field
+    Flag { key: String },
+    /// Remove the impediment flag from an issue
+    Unflag { key: String },
     /// Read and write issue comments
     Comment {
         #[command(subcommand)]
@@ -993,10 +997,58 @@ fn issue(command: &IssueCommand, mut jira: Jira, machine: bool) -> Result<()> {
             )?;
             json!({"key": key, "transitionId": id, "target": matches[0]["to"]["name"]})
         }
+        IssueCommand::Flag { key } => set_issue_flag(&jira, key, true)?,
+        IssueCommand::Unflag { key } => set_issue_flag(&jira, key, false)?,
         IssueCommand::Comment { command } => comment(&jira, command)?,
         IssueCommand::RemoteLink { command } => remote_link(&jira, command)?,
     };
     emit(&result, machine)
+}
+
+fn set_issue_flag(jira: &Jira, key: &str, flagged: bool) -> Result<Value> {
+    let path = format!("/issue/{}/editmeta", encoded(key));
+    let metadata = jira.get(&path)?;
+    let fields = metadata["fields"]
+        .as_object()
+        .context("Edit metadata has no fields")?;
+    let flagged_field = fields
+        .iter()
+        .find(|(_, definition)| {
+            definition["name"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case("Flagged"))
+        })
+        .with_context(|| format!("Issue {key} has no editable Jira Software Flagged field"))?;
+    let (field_id, definition) = flagged_field;
+    if definition["schema"]["type"] != "array" {
+        bail!("Issue {key} has an unsupported Flagged field schema");
+    }
+
+    let value = if flagged {
+        let options = definition["allowedValues"]
+            .as_array()
+            .context("Flagged field metadata has no allowed values; cannot safely flag issue")?;
+        let impediment = options
+            .iter()
+            .find(|option| {
+                option["value"]
+                    .as_str()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("Impediment"))
+            })
+            .context("Flagged field does not allow the Impediment value")?;
+        json!([{"value": impediment["value"]}])
+    } else {
+        json!([])
+    };
+
+    let mut update = Map::new();
+    update.insert(field_id.clone(), value);
+    jira.write(
+        Method::PUT,
+        &format!("/issue/{}", encoded(key)),
+        Some(&json!({"fields": update})),
+    )?;
+    Ok(json!({"key": key, "flagged": flagged}))
 }
 
 fn read_fields_file(path: Option<&PathBuf>) -> Result<Map<String, Value>> {
@@ -1628,6 +1680,47 @@ mod tests {
                 .kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+    }
+
+    #[test]
+    fn issue_flag_commands_use_only_editable_flagged_field() {
+        for (name, expected) in [("flag", r#"[{"value":"Impediment"}]"#), ("unflag", "[]")] {
+            let cli = Cli::try_parse_from(["jira", "issue", name, "TEST-1"]).unwrap();
+            let Command::Issue { command } = cli.command else {
+                panic!("expected issue command");
+            };
+            let expected_flagged = name == "flag";
+            let issue_command = *command;
+            let metadata = json!({"fields": {"customfield_10021": {
+                "name": "Flagged", "schema": {"type": "array"},
+                "allowedValues": [{"value": "Impediment"}]
+            }}});
+            let (server, captured, thread) = fixture(vec![(200, metadata), (204, Value::Null)]);
+            issue(&issue_command, configured_client(server), true).unwrap();
+            thread.join().unwrap();
+            let requests = captured.lock().unwrap();
+            assert!(requests[0].starts_with("GET /rest/api/3/issue/TEST-1/editmeta "));
+            assert!(requests[1].starts_with("PUT /rest/api/3/issue/TEST-1 "));
+            assert!(requests[1].contains(&format!("\"customfield_10021\":{expected}")));
+            assert_eq!(
+                matches!(issue_command, IssueCommand::Flag { .. }),
+                expected_flagged
+            );
+        }
+    }
+
+    #[test]
+    fn issue_flag_refuses_when_flagged_field_is_not_editable() {
+        let (server, captured, thread) = fixture(vec![(
+            200,
+            json!({"fields": {"summary": {"name": "Summary"}}}),
+        )]);
+        let error = set_issue_flag(&configured_client(server), "TEST-1", true).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no editable Jira Software Flagged field"));
+        thread.join().unwrap();
+        assert_eq!(captured.lock().unwrap().len(), 1);
     }
 
     #[test]
