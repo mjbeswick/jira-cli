@@ -9,7 +9,7 @@ describe('Jira REST write contracts', () => {
 
   beforeEach(async () => {
     requests = [];
-    reply = jest.fn(() => ({ status: 200, body: {} }));
+    reply = jest.fn(() => ({ status: 200, body: { key: 'TEST-1' } }));
     server = http.createServer((req, res) => {
       let body = '';
       req.on('data', chunk => { body += chunk; });
@@ -148,6 +148,77 @@ describe('Jira REST write contracts', () => {
     ['update', 'PUT', '/issue/TEST-1', (client, data) => client.updateIssue('TEST-1', data)]
   ];
 
+  test.each([2, 3])('sends textarea custom fields with the correct v%i representation', async version => {
+    const client = createClient(version);
+    const data = { fields: { project: { key: 'TEST' }, customfield_10010: 'Impact\nDetails', customfield_10011: { id: '2' } }, richTextFields: ['customfield_10010'] };
+    await client.createIssue(data);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].data).toEqual({ fields: {
+      project: { key: 'TEST' }, customfield_10010: version === 3 ? client.toADF('Impact\nDetails') : 'Impact\nDetails',
+      customfield_10011: { id: '2' }
+    } });
+    expect(data.fields.customfield_10010).toBe('Impact\nDetails');
+  });
+
+  test('does not retry issue creation after an ambiguous server error', async () => {
+    const client = createClient(3);
+    reply.mockReturnValue({ status: 503, body: { errorMessages: ['Unavailable'] } });
+    await expect(client.createIssue({ fields: { summary: 'New' } })).rejects.toMatchObject({ status: 503 });
+    expect(requests).toHaveLength(1);
+  });
+
+  test('refuses to claim an issue was created without a key', async () => {
+    const client = createClient(3);
+    reply.mockReturnValue({ status: 200, headers: { 'Content-Type': 'text/html' }, body: '<html>Login required</html>' });
+    await expect(client.createIssue({ fields: { summary: 'New' } })).rejects.toThrow('did not confirm');
+    expect(requests).toHaveLength(1);
+  });
+
+  test('discovers all paginated Cloud create fields and enriches custom schema', async () => {
+    const client = createClient(3);
+    reply.mockImplementation(req => {
+      if (req.url === '/rest/api/3/field') return { status: 200, body: [{ id: 'customfield_10010', schema: { type: 'string', custom: 'example:textarea' } }] };
+      if (req.url.includes('/issuetypes/1?')) {
+        const second = req.url.includes('startAt=1');
+        return { status: 200, body: { fields: second ? [{ fieldId: 'customfield_10010', name: 'Impact Details', required: true }] : [{ fieldId: 'summary', name: 'Summary', required: true }], total: 2 } };
+      }
+      return { status: 200, body: { issueTypes: [{ id: '1', name: 'Bug' }], total: 1 } };
+    });
+    const metadata = await client.getCreateFields('TEST', 'Bug');
+    expect(metadata.fields).toHaveLength(2);
+    expect(metadata.fields[1].schema.custom).toBe('example:textarea');
+    expect(requests).toHaveLength(4);
+  });
+
+  test('uses v2 create metadata when configured for Data Center', async () => {
+    const client = createClient(2);
+    reply.mockReturnValue({ status: 200, body: { projects: [{ key: 'TEST', issuetypes: [{ id: '1', name: 'Bug', fields: { customfield_10011: { name: 'Severity', required: true, schema: { type: 'option' } } } }] }] } });
+    const metadata = await client.getCreateFields('TEST', 'Bug');
+    expect(metadata.fields[0].id).toBe('customfield_10011');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toContain('/rest/api/2/issue/createmeta?');
+  });
+
+  test('falls back to v2 read-only metadata, then creates exactly once using v2', async () => {
+    const client = createClient();
+    reply.mockImplementation(req => {
+      if (req.url.startsWith('/rest/api/3/issue/createmeta/')) return { status: 404, body: { errorMessages: ['Not found'] } };
+      if (req.url.startsWith('/rest/api/2/issue/createmeta?')) return { status: 200, body: { projects: [{ key: 'TEST', issuetypes: [{ id: '1', name: 'Bug', fields: { summary: { name: 'Summary', required: true } } }] }] } };
+      return { status: 201, body: { key: 'TEST-1' } };
+    });
+    await client.getCreateFields('TEST', 'Bug');
+    await client.createIssue({ fields: { summary: 'Example' } });
+    expect(requests.filter(req => req.method === 'POST')).toEqual([{
+      method: 'POST', url: '/rest/api/2/issue', data: { fields: { summary: 'Example' } }
+    }]);
+  });
+
+  test('view all fields requests explicit *all for agent verification', async () => {
+    const client = createClient(3);
+    await client.getIssue('TEST-1', { allFields: true });
+    expect(requests[0].url).toContain('fields=*all');
+  });
+
   const description = 'First line\nSecond line\n\nNext paragraph';
   const adf = {
     type: 'doc', version: 1, content: [
@@ -176,7 +247,7 @@ describe('Jira REST write contracts', () => {
       expect(data.fields.description).toBe(description);
     });
 
-    test.each([2, 3])('rebuilds the payload when auto falls back from v%i', async version => {
+    if (method !== 'POST') test.each([2, 3])('rebuilds the payload when auto falls back from v%i', async version => {
       const client = createClient();
       client.apiVersion = version;
       const data = { fields: { description } };
@@ -194,7 +265,7 @@ describe('Jira REST write contracts', () => {
       expect(data.fields.description).toBe(description);
     });
 
-    test('retains HTML fallback and rebuilds the v2 description', async () => {
+    if (method !== 'POST') test('retains HTML fallback and rebuilds the v2 description', async () => {
       const client = createClient();
       reply.mockReturnValueOnce({ status: 200, headers: { 'Content-Type': 'text/html' }, body: '<html>Unsupported API</html>' });
 
@@ -213,12 +284,12 @@ describe('Jira REST write contracts', () => {
     });
 
     test('does not add an omitted description', async () => {
-      await write(createClient(), { fields: { summary: 'Example' } });
+      await write(createClient(3), { fields: { summary: 'Example' } });
       expect(requests[0].data).toEqual({ fields: { summary: 'Example' } });
     });
 
     test('encodes an empty description without an invalid empty text node', async () => {
-      await write(createClient(), { fields: { description: '' } });
+      await write(createClient(3), { fields: { description: '' } });
       expect(requests[0].data.fields.description).toEqual({
         type: 'doc', version: 1, content: [{ type: 'paragraph' }]
       });
@@ -226,7 +297,7 @@ describe('Jira REST write contracts', () => {
 
     test('does not fall back on unrelated validation errors', async () => {
       reply.mockReturnValue({ status: 400, body: { errors: { summary: 'Summary is required' } } });
-      await expect(write(createClient(), { fields: { description } })).rejects.toMatchObject({ status: 400 });
+      await expect(write(createClient(3), { fields: { description } })).rejects.toMatchObject({ status: 400 });
       expect(requests).toHaveLength(1);
     });
 

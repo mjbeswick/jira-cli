@@ -97,7 +97,7 @@ describe('Utils', () => {
     });
 
     it('preserves long Jira issue keys in the rendered table', () => {
-      const key = 'TILLUI2-4579';
+      const key = 'EXAMPLE-4579';
       const table = Utils.createIssuesTable([{
         key,
         fields: { summary: 'React Router investigation' }
@@ -264,6 +264,36 @@ describe('Utils', () => {
       expect(Utils.resolveDescription(null)).toBe('');
       expect(Utils.resolveDescription(undefined)).toBe('');
       expect(Utils.resolveDescription('')).toBe('');
+    });
+  });
+
+  describe('createCommentsTable', () => {
+    it('renders Jira v3 ADF comment bodies as text', () => {
+      const table = Utils.createCommentsTable([{
+        id: '5715611',
+        author: { displayName: 'Test User' },
+        body: {
+          version: 1,
+          type: 'doc',
+          content: [{
+            type: 'paragraph',
+            content: [{ type: 'text', text: 'Structured comment body' }]
+          }]
+        },
+        created: '2023-12-25T10:30:00.000Z',
+        updated: '2023-12-25T11:00:00.000Z'
+      }]);
+
+      expect(table.toString()).toContain('Structured comment body');
+    });
+
+    it('still renders plain-text comment bodies', () => {
+      const table = Utils.createCommentsTable([{
+        id: '5715612',
+        body: 'Plain comment body'
+      }]);
+
+      expect(table.toString()).toContain('Plain comment body');
     });
   });
 

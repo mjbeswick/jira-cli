@@ -31,6 +31,7 @@ describe('IssueCommand', () => {
       getIssue: jest.fn(),
       searchIssues: jest.fn(),
       createIssue: jest.fn(),
+      getCreateFields: jest.fn(),
       updateIssue: jest.fn(),
       assignIssue: jest.fn(),
       addComment: jest.fn(),
@@ -92,6 +93,137 @@ describe('IssueCommand', () => {
       const transitionsCommand = commands.find(cmd => cmd.name() === 'transitions');
       expect(transitionsCommand).toBeDefined();
       expect(transitionsCommand.description()).toContain('list workflow transitions');
+    });
+  });
+
+  describe('agent-friendly create fields', () => {
+    let exitSpy;
+    const metadata = {
+      project: 'TEST', issueType: { id: '10001', name: 'Bug' },
+      fields: [
+        { id: 'summary', name: 'Summary', required: true },
+        { id: 'customfield_10010', name: 'Impact Details', required: true,
+          schema: { type: 'string', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textarea' } },
+        { id: 'customfield_10011', name: 'Severity', required: true,
+          schema: { type: 'option' }, allowedValues: [{ id: '2', value: 'High' }] }
+      ]
+    };
+
+    beforeEach(() => {
+      exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => {});
+      mockJiraClient.getCreateFields.mockResolvedValue(metadata);
+      mockJiraClient.createIssue.mockResolvedValue({ key: 'TEST-2' });
+      mockFactory.getConfig = () => ({ get: () => 'https://example.com' });
+    });
+    afterEach(() => exitSpy.mockRestore());
+
+    it('returns full create metadata as a single JSON document', async () => {
+      await issueCommand.parseAsync(['node', 'jira', 'create-fields', '--project', 'TEST', '--type', 'Bug', '--format', 'json']);
+      expect(JSON.parse(mockIOStreams.out.mock.calls[0][0])).toEqual(metadata);
+      expect(mockJiraClient.createIssue).not.toHaveBeenCalled();
+    });
+
+    it('requires custom fields before a write and exposes their IDs', async () => {
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jira-fields-'));
+      const file = path.join(dir, 'fields.json');
+      try {
+        fs.writeFileSync(file, JSON.stringify({ customfield_10010: 'Orders blocked' }));
+        await issueCommand.parseAsync(['node', 'jira', 'create', '--project', 'TEST', '--type', 'Bug', '--summary', 'Failure', '--fields-file', file]);
+        expect(mockIOStreams.error).toHaveBeenCalledWith(expect.stringContaining('Severity (customfield_10011)'));
+        expect(mockJiraClient.createIssue).not.toHaveBeenCalled();
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('submits validated fields and returns only JSON on stdout', async () => {
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jira-fields-'));
+      const file = path.join(dir, 'fields.json');
+      try {
+        fs.writeFileSync(file, JSON.stringify({ customfield_10010: 'Orders blocked', customfield_10011: { id: '2' } }));
+        await issueCommand.parseAsync(['node', 'jira', 'create', '--project', 'TEST', '--type', 'Bug', '--summary', 'Failure', '--fields-file', file, '--format', 'json']);
+        expect(mockJiraClient.createIssue).toHaveBeenCalledWith({
+          fields: { project: { key: 'TEST' }, issuetype: { id: '10001' }, summary: 'Failure',
+            customfield_10010: 'Orders blocked', customfield_10011: { id: '2' } },
+          richTextFields: ['customfield_10010']
+        });
+        expect(mockIOStreams.spinner).not.toHaveBeenCalled();
+        expect(mockIOStreams.success).not.toHaveBeenCalled();
+        expect(mockIOStreams.out.mock.calls).toEqual([[JSON.stringify({ key: 'TEST-2', url: 'https://example.com/browse/TEST-2' })]]);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('previews the validated create payload without posting', async () => {
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jira-fields-'));
+      const file = path.join(dir, 'fields.json');
+      try {
+        fs.writeFileSync(file, JSON.stringify({ customfield_10010: 'Orders blocked', customfield_10011: { id: '2' } }));
+        await issueCommand.parseAsync(['node', 'jira', 'create', '--project', 'TEST', '--type', 'Bug', '--summary', 'Failure', '--fields-file', file, '--dry-run', '--format', 'json']);
+        expect(JSON.parse(mockIOStreams.out.mock.calls[0][0])).toMatchObject({
+          dryRun: true, fields: { summary: 'Failure', customfield_10010: 'Orders blocked', customfield_10011: { id: '2' } },
+          richTextFields: ['customfield_10010']
+        });
+        expect(mockJiraClient.createIssue).not.toHaveBeenCalled();
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('rejects a field that collides with a standard CLI flag', async () => {
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jira-fields-'));
+      const file = path.join(dir, 'fields.json');
+      try {
+        fs.writeFileSync(file, JSON.stringify({ summary: 'Override' }));
+        await issueCommand.parseAsync(['node', 'jira', 'create', '--project', 'TEST', '--type', 'Bug', '--summary', 'Failure', '--fields-file', file]);
+        expect(mockJiraClient.createIssue).not.toHaveBeenCalled();
+        expect(mockIOStreams.error).toHaveBeenCalledWith(expect.stringContaining('already set'));
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('validates required fields even without an additional-fields file', async () => {
+      await issueCommand.parseAsync(['node', 'jira', 'create', '--project', 'TEST', '--type', 'Bug', '--summary', 'Failure', '--format', 'json']);
+      expect(mockJiraClient.createIssue).not.toHaveBeenCalled();
+      expect(JSON.parse(mockIOStreams.error.mock.calls[0][0]).message).toContain('Impact Details (customfield_10010)');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('rejects an invalid severity option before creating an issue', async () => {
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jira-fields-'));
+      const file = path.join(dir, 'fields.json');
+      try {
+        fs.writeFileSync(file, JSON.stringify({ customfield_10010: 'Orders blocked', customfield_10011: { id: '999' } }));
+        await issueCommand.parseAsync(['node', 'jira', 'create', '--project', 'TEST', '--type', 'Bug', '--summary', 'Failure', '--fields-file', file, '--format', 'json']);
+        expect(JSON.parse(mockIOStreams.error.mock.calls[0][0]).message).toContain('does not accept');
+        expect(mockJiraClient.createIssue).not.toHaveBeenCalled();
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('returns parseable JSON errors on stderr without stdout noise', async () => {
+      mockJiraClient.getCreateFields.mockRejectedValue(new Error('Metadata unavailable'));
+      await issueCommand.parseAsync(['node', 'jira', 'create-fields', '--project', 'TEST', '--type', 'Bug', '--format', 'json']);
+      expect(JSON.parse(mockIOStreams.error.mock.calls[0][0])).toEqual({ error: 'create_fields_failed', message: 'Metadata unavailable' });
+      expect(mockIOStreams.out).not.toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+
+    it('returns all issue fields as JSON for post-create verification', async () => {
+      const issue = { key: 'TEST-2', fields: { customfield_10011: { id: '2', value: 'High' } } };
+      mockJiraClient.getIssue.mockResolvedValue(issue);
+      await issueCommand.parseAsync(['node', 'jira', 'view', 'TEST-2', '--format', 'json']);
+      expect(mockJiraClient.getIssue).toHaveBeenCalledWith('TEST-2', { allFields: true });
+      expect(JSON.parse(mockIOStreams.out.mock.calls[0][0])).toEqual(issue);
+      expect(mockIOStreams.spinner).not.toHaveBeenCalled();
     });
   });
 
@@ -640,7 +772,7 @@ describe('IssueCommand', () => {
       mockJiraClient.searchIssues.mockResolvedValue({
         total: 1,
         issues: [{
-          key: 'TILLUI2-4579',
+          key: 'EXAMPLE-4579',
           fields: {
             summary: 'React Router investigation',
             status: { name: 'In Review' },
@@ -658,7 +790,7 @@ describe('IssueCommand', () => {
       const output = mockIOStreams.out.mock.calls.map(([message]) => message).join('\n');
       const parsed = JSON.parse(output);
       expect(parsed.issues[0]).toEqual({
-        key: 'TILLUI2-4579',
+        key: 'EXAMPLE-4579',
         summary: 'React Router investigation',
         status: 'In Review',
         assignee: 'Michael',

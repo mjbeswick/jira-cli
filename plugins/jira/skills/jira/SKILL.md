@@ -9,6 +9,12 @@ allowed-tools: [Bash, Read, Write, Glob, Grep]
 
 A CLI tool for Atlassian Jira. Lets you configure authentication, inspect issues and projects, create and update issues, manage comments and remote links, inspect sprint state, and install this skill into a project.
 
+This skill documents the published npm CLI and its command syntax. The opt-in
+Rust candidate has different flags and a separate `jira-rust-candidate` skill;
+use that skill only when the active policy explicitly permits the Rust binary.
+The `jira completions <shell>` command is currently available only in the Rust
+candidate, not this npm CLI.
+
 ## Installation
 
 ```sh
@@ -224,12 +230,12 @@ jira issue list --jql 'assignee = currentUser' --format json
 View issue details.
 
 ```sh
-jira issue view <key> [--format terminal|markdown] [--output <path>]
+jira issue view <key> [--format terminal|markdown|json] [--output <path>]
 ```
 
 | Option | Default | Description |
 |---|---|---|
-| `--format` | `terminal` | Output format |
+| `--format` | `terminal` | Output format; JSON includes all Jira issue fields |
 | `--output <path>` | none | Save the rendered output to a file |
 
 ```sh
@@ -239,10 +245,16 @@ jira issue view PROJ-123 --format markdown --output ./issue.md
 
 ### `issue create`
 
-Create a new issue.
+Create a new issue after the exact draft and fields are approved. Discover project/type-specific required fields and values before writing:
 
 ```sh
-jira issue create --project <project> --type <type> --summary <summary> [--description <text>] [--description-file <path>] [--assignee <assignee>] [--priority <priority>]
+jira issue create-fields --project PROJ --type Bug --format json
+```
+
+The JSON lists field IDs, names, required flags, schemas and available options (when Jira provides them). Use these IDs, not guessed names or example IDs. Prepare an additional-fields JSON file such as `{"customfield_10010":"Impact text","customfield_10011":{"id":"2"}}` using the **actual** discovered IDs and option. Textarea strings are sent as ADF on v3 and plain text on v2. Do not create when the field schema or required values are unknown.
+
+```sh
+jira issue create --project <project> --type <type> --summary <summary> [--description <text>] [--description-file <path>] [--assignee <assignee>] [--priority <priority>] [--fields-file <json-path>] [--dry-run] [--format text|json]
 ```
 
 Important options:
@@ -256,11 +268,18 @@ Important options:
 | `--description-file <path>` | File-backed multiline description |
 | `--assignee <assignee>` | Initial assignee |
 | `--priority <priority>` | Initial priority |
+| `--fields-file <path>` | Extra create-screen fields, JSON object keyed by field ID; validates required fields before writing |
+| `--dry-run` | Validate and preview fields as JSON without creating an issue; review the exact draft before approval |
+| `--format json` | Single JSON result on stdout (`key`, `url`); JSON errors on stderr |
 
 ```sh
 jira issue create --project PROJ --type Bug --summary "Login fails"
 jira issue create --project PROJ --type Story --summary "Add dashboard" --description-file ./dashboard.md
+jira issue create --project PROJ --type Bug --summary "Checkout blocked" --fields-file ./fields.json --format json
+jira issue view PROJ-123 --format json  # Verify all fields after creation
 ```
+
+Creation is never retried automatically: if it fails or the response is ambiguous, search for an existing issue before considering another attempt. An agent must still obtain fresh approval of the complete draft; CLI support is not permission to write.
 
 ### `issue edit <key>`
 

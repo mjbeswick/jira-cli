@@ -9,6 +9,7 @@ const {
   buildJQL
 } = require('../../../lib/utils');
 const { readDescriptionFile } = require('./shared');
+const { readFieldsFile, validateCreateFields } = require('./create-fields');
 
 async function listIssues(client, io, options) {
   const spinner = io.spinner('Fetching issues...');
@@ -62,13 +63,17 @@ async function listIssues(client, io, options) {
 }
 
 async function getIssue(client, io, issueKey, options = {}) {
-  const spinner = io.spinner(`Fetching issue ${issueKey}...`);
+  const spinner = options.format === 'json' ? null : io.spinner(`Fetching issue ${issueKey}...`);
 
   try {
-    const issue = await client.getIssue(issueKey);
-    spinner.stop();
+    const issue = await client.getIssue(issueKey, { allFields: options.format === 'json' });
+    spinner?.stop();
 
-    if (options.output) {
+    if (options.format === 'json') {
+      const content = JSON.stringify(issue);
+      if (options.output) fs.writeFileSync(path.resolve(options.output), content + '\n', 'utf8');
+      else io.out(content);
+    } else if (options.output) {
       const outputPath = path.resolve(options.output);
       const content = formatIssueAsMarkdown(issue);
 
@@ -82,7 +87,7 @@ async function getIssue(client, io, issueKey, options = {}) {
     }
 
   } catch (err) {
-    spinner.stop();
+    spinner?.stop();
     throw err;
   }
 }
@@ -108,7 +113,7 @@ async function createIssue(client, io, factory, options = {}) {
     );
   }
 
-  let description = '';
+  let description;
   if (options.description && options.descriptionFile) {
     throw new Error('Cannot use both --description and --description-file. Please use only one.');
   }
@@ -123,10 +128,10 @@ async function createIssue(client, io, factory, options = {}) {
     fields: {
       project: { key: options.project },
       issuetype: { name: options.type },
-      summary: options.summary,
-      description: description
+      summary: options.summary
     }
   };
+  if (description !== undefined) issueData.fields.description = description;
 
   if (options.assignee) {
     issueData.fields.assignee = { name: options.assignee };
@@ -136,12 +141,59 @@ async function createIssue(client, io, factory, options = {}) {
     issueData.fields.priority = { name: options.priority };
   }
 
-  const spinner = io.spinner('Creating issue...');
-  const result = await client.createIssue(issueData);
-  spinner.stop();
+  const fields = options.fieldsFile ? readFieldsFile(options.fieldsFile) : {};
+  if (options.fieldsFile) {
+    // Check collisions before loading metadata; the file cannot override CLI flags.
+    for (const id of Object.keys(fields)) {
+      if (Object.prototype.hasOwnProperty.call(issueData.fields, id)) {
+        throw new Error(`Field "${id}" is already set by a command option; remove the duplicate from --fields-file.`);
+      }
+    }
+  }
+  const metadata = await client.getCreateFields(options.project, options.type);
+  const richTextFields = validateCreateFields(fields, metadata, issueData.fields);
+  if (richTextFields.length) issueData.richTextFields = richTextFields;
+  Object.assign(issueData.fields, fields);
+  issueData.fields.issuetype = { id: metadata.issueType.id };
 
+  if (options.dryRun) {
+    if (options.format === 'json') {
+      io.out(JSON.stringify({ dryRun: true, project: metadata.project, issueType: metadata.issueType,
+        fields: issueData.fields, richTextFields: richTextFields }));
+    } else {
+      io.out('Validated create payload (no issue created):');
+      io.out(JSON.stringify(issueData.fields, null, 2));
+    }
+    return;
+  }
+
+  const spinner = options.format === 'json' ? null : io.spinner('Creating issue...');
+  let result;
+  try {
+    result = await client.createIssue(issueData);
+  } finally {
+    spinner?.stop();
+  }
+
+  if (options.format === 'json') {
+    io.out(JSON.stringify({ key: result.key, url: `${config.get('server')}/browse/${result.key}` }));
+    return;
+  }
   io.success(`Issue created: ${result.key}`);
   io.out(`URL: ${config.get('server')}/browse/${result.key}`);
+}
+
+async function listCreateFields(client, io, options) {
+  if (!options.project || !options.type) {
+    throw new Error('Specify --project <KEY> and --type <TYPE> to discover create fields.');
+  }
+  const metadata = await client.getCreateFields(options.project, options.type);
+  if (options.format === 'json') {
+    io.out(JSON.stringify(metadata));
+  } else {
+    io.out(`Create fields for ${metadata.project} / ${metadata.issueType.name} (${metadata.issueType.id}):`);
+    metadata.fields.forEach(field => io.out(`${field.id} | ${field.name} | ${field.required ? 'required' : 'optional'} | ${field.schema?.custom || field.schema?.type || 'unknown'}`));
+  }
 }
 
 async function updateIssue(client, io, issueKey, options = {}) {
@@ -282,7 +334,8 @@ function register(command, factory) {
       '  $ jira issue view PROJ-123 --output ./issue.md       # Save to file\n' +
       '  $ jira issue view PROJ-123 --format markdown --output ./issue.md')
     .alias('show')
-    .option('--format <format>', 'output format (terminal, markdown)', 'terminal')
+    .addOption(new Option('--format <format>', 'output format (terminal, markdown, json)')
+      .choices(['terminal', 'markdown', 'json']).default('terminal'))
     .option('--output <path>', 'save to file instead of displaying')
     .action(async (key, options) => {
       const io = factory.getIOStreams();
@@ -291,7 +344,23 @@ function register(command, factory) {
       try {
         await getIssue(client, io, key, options);
       } catch (err) {
-        io.error(`Failed to get issue: ${err.message}`);
+        io.error(options.format === 'json' ? JSON.stringify({ error: 'get_issue_failed', message: err.message }) : `Failed to get issue: ${err.message}`);
+        process.exit(1);
+      }
+    });
+
+  command
+    .command('create-fields')
+    .description('discover create-screen fields, IDs, schemas and allowed values for a project and issue type')
+    .requiredOption('--project <key>', 'project key')
+    .requiredOption('--type <type>', 'issue type name or ID')
+    .addOption(new Option('--format <format>', 'output format (table, json)').choices(['table', 'json']).default('table'))
+    .action(async (options) => {
+      const io = factory.getIOStreams();
+      try {
+        await listCreateFields(await factory.getJiraClient(), io, options);
+      } catch (err) {
+        io.error(options.format === 'json' ? JSON.stringify({ error: 'create_fields_failed', message: err.message }) : `Failed to discover create fields: ${err.message}`);
         process.exit(1);
       }
     });
@@ -318,6 +387,9 @@ function register(command, factory) {
     .option('--description-file <path>', 'read description from file (optional)')
     .option('--assignee <assignee>', 'assignee username')
     .option('--priority <priority>', 'priority (e.g., High, Medium, Low)')
+    .option('--fields-file <path>', 'JSON object of additional Jira create-field IDs and values (validated against create metadata)')
+    .option('--dry-run', 'validate and display the issue fields without creating an issue')
+    .addOption(new Option('--format <format>', 'output format (text, json)').choices(['text', 'json']).default('text'))
     .action(async (options) => {
       const io = factory.getIOStreams();
       const client = await factory.getJiraClient();
@@ -325,7 +397,7 @@ function register(command, factory) {
       try {
         await createIssue(client, io, factory, options);
       } catch (err) {
-        io.error(`Failed to create issue: ${err.message}`);
+        io.error(options.format === 'json' ? JSON.stringify({ error: 'create_issue_failed', message: err.message }) : `Failed to create issue: ${err.message}`);
         process.exit(1);
       }
     });
@@ -374,6 +446,7 @@ module.exports = {
   listIssues,
   getIssue,
   createIssue,
+  listCreateFields,
   updateIssue,
   deleteIssue
 };

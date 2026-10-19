@@ -284,7 +284,7 @@ describe('JiraClient', () => {
 
       const result = await client.createIssue(issueData);
 
-      expect(client.clientV3.request).toHaveBeenCalledWith({ method: 'post', url: '/issue', data: issueData });
+      expect(client.clientV3.request).toHaveBeenCalledWith({ method: 'post', url: '/issue', data: issueData, __noRetry: true });
       expect(result).toEqual(mockResponse);
     });
 
