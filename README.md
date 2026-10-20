@@ -28,6 +28,7 @@ Use the full-path Rust `jira --help` and `<command> --help` for exact options. R
 | `issue remote-link` | `list`, `add`, `update`, `delete` |
 | `project` | `list`, `view`, `components`, `versions` |
 | `sprint` | `boards`, `list`, `active` |
+| `skills` | `list` (discover skills packaged with the Rust CLI) |
 | `install-skill` | Copy the packaged **Rust** agent skill to a chosen directory |
 | `completions` | Generate shell completions for Bash, Elvish, Fish, PowerShell, or Zsh |
 
@@ -38,7 +39,11 @@ Use the full-path Rust `jira --help` and `<command> --help` for exact options. R
 ~/.local/share/jira-cli-rust/bin/jira --json issue transitions PROJ-123
 ~/.local/share/jira-cli-rust/bin/jira --json sprint boards
 ~/.local/share/jira-cli-rust/bin/jira --json sprint list --board 10636 --state active
+~/.local/share/jira-cli-rust/bin/jira --json skills list
 ```
+
+`skills list` reports skills packaged with this CLI and their install command. It
+does not determine whether a particular agent has loaded or can use a skill.
 
 ### Shell completions
 

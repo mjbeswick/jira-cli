@@ -24,6 +24,7 @@ use std::{
         "Use --json for machine-readable results; writes are never retried automatically.\n\n",
         "Examples:\n",
         "  jira --json issue list --project DEMO\n",
+        "  jira --json skills list\n",
         "  jira --json issue create-fields --project DEMO --type Task\n",
         "  jira --json issue create --project DEMO --type Task --summary 'Example' --dry-run"
     ),
@@ -71,6 +72,11 @@ enum Command {
     Sprint {
         #[command(subcommand)]
         command: SprintCommand,
+    },
+    /// Discover agent skills packaged with this Rust CLI
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommand,
     },
     /// Copy the packaged Jira skill into the current project
     InstallSkill {
@@ -375,6 +381,12 @@ enum SprintCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum SkillsCommand {
+    /// List skills packaged with this CLI; does not report agent-specific availability
+    List,
+}
+
 fn emit(value: &Value, machine: bool) -> Result<()> {
     if machine {
         println!("{}", serde_json::to_string(value)?);
@@ -420,10 +432,16 @@ fn main() {
 }
 
 fn run(cli: &Cli) -> Result<()> {
-    if let Command::Completions { shell } = &cli.command {
-        let mut command = Cli::command();
-        generate(*shell, &mut command, "jira", &mut std::io::stdout());
-        return Ok(());
+    match &cli.command {
+        Command::Completions { shell } => {
+            let mut command = Cli::command();
+            generate(*shell, &mut command, "jira", &mut std::io::stdout());
+            return Ok(());
+        }
+        Command::Skills {
+            command: SkillsCommand::List,
+        } => return emit(&packaged_skills(), cli.json),
+        _ => {}
     }
 
     let mut store = config::load()?;
@@ -581,8 +599,20 @@ fn run(cli: &Cli) -> Result<()> {
             let path = install_skill(dest, *force)?;
             emit(&json!({"installed": path}), cli.json)
         }
+        Command::Skills { .. } => unreachable!("handled before loading configuration"),
         Command::Completions { .. } => unreachable!("handled before loading configuration"),
     }
+}
+
+fn packaged_skills() -> Value {
+    json!({
+        "skills": [{
+            "name": "jira-rust-candidate",
+            "description": "Read Jira with the Rust CLI and prepare exact issue drafts for user-approved mutations.",
+            "distribution": "packaged",
+            "install_command": "jira install-skill"
+        }]
+    })
 }
 
 fn configured(store: &config::Store, selected: &str) -> Result<Jira> {
@@ -1734,6 +1764,27 @@ mod tests {
         assert!(help.contains("--dry-run"));
         assert!(help.contains("--json"));
         assert!(help.contains("A scriptable Jira CLI for people and agents"));
+    }
+
+    #[test]
+    fn skills_list_reports_only_packaged_skill_metadata() {
+        let cli = Cli::try_parse_from(["jira", "--json", "skills", "list"]).unwrap();
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Command::Skills {
+                command: SkillsCommand::List
+            }
+        ));
+
+        let catalog = packaged_skills();
+        assert_eq!(catalog["skills"][0]["name"], "jira-rust-candidate");
+        assert_eq!(catalog["skills"][0]["distribution"], "packaged");
+        assert_eq!(
+            catalog["skills"][0]["install_command"],
+            "jira install-skill"
+        );
+        assert!(catalog["skills"][0].get("available").is_none());
     }
 
     #[test]
