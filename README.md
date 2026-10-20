@@ -67,6 +67,16 @@ PowerShell and Elvish scripts are available with `jira completions powershell` a
 
 `issue list` supports project, assignee, reporter, status, type, priority, created, updated, and `--jql` filters. User-supplied structured values are escaped for JQL. Cloud search follows page tokens; Data Center search follows offsets, up to `--limit`. `issue view --json` requests **all** fields, including potentially sensitive custom fields; avoid indiscriminate logging.
 
+For Jira API v3, `issue create`, `issue edit`, public `issue comment add/edit`,
+and textarea values in `--fields-file` convert Markdown to Atlassian Document
+Format (ADF). `issue view --format markdown` converts the returned description
+back to Markdown, and `issue comment list --markdown` converts ADF comment bodies
+to Markdown. Public comment edits preserve rich formatting. Supported formatting
+includes paragraphs, headings, emphasis,
+links, lists, blockquotes, code, and thematic breaks. Jira Service Management
+internal notes and API v2 use plain text; Markdown syntax is stripped on those
+paths while preserving visible text and link destinations.
+
 ## Configuration and credentials
 
 The CLI reads and writes `~/.jira-cli/config.json`, compatible with the npm multi-profile store; `JIRA_CLI_CONFIG_DIR` changes its directory. An older single-profile config is migrated to the default profile on first use without removing the source. On Unix, new config files and directories have restrictive permissions. `config show` and `profile list` redact tokens and cookies.

@@ -4,7 +4,7 @@ mod config;
 use anyhow::{bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
-use client::{adf, encoded, Jira};
+use client::{encoded, markdown_to_adf, markdown_to_plain_text, Jira};
 use reqwest::Method;
 use serde_json::{json, Map, Value};
 use std::{
@@ -222,10 +222,10 @@ struct CreateArgs {
     #[arg(
         long,
         conflicts_with = "description_file",
-        help = "Plain-text description"
+        help = "Markdown description"
     )]
     description: Option<String>,
-    #[arg(long, help = "Read a multiline description from a UTF-8 file")]
+    #[arg(long, help = "Read a Markdown description from a UTF-8 file")]
     description_file: Option<PathBuf>,
     #[arg(
         long,
@@ -277,6 +277,8 @@ struct ListArgs {
 enum CommentCommand {
     List {
         key: String,
+        #[arg(long, help = "Render comment bodies as Markdown when supported")]
+        markdown: bool,
     },
     Add {
         key: String,
@@ -955,13 +957,6 @@ fn issue(command: &IssueCommand, mut jira: Jira, machine: bool) -> Result<()> {
             }
             // Fetch the edit screen so unknown/read-only fields never slip into a PUT.
             let metadata = jira.get(&format!("/issue/{}/editmeta", encoded(key)))?;
-            if jira.version() == 3 {
-                if let Some(description) = fields.get_mut("description") {
-                    if let Some(text) = description.as_str() {
-                        *description = adf(text);
-                    }
-                }
-            }
             if let Some(assignee) = assignee {
                 insert_field(
                     &mut fields,
@@ -1161,8 +1156,19 @@ fn validate_field(id: &str, value: &Value, definition: &Value, version: u8) -> R
             }
         }
     }
-    Ok(if custom.ends_with(":textarea") && version == 3 {
-        value.as_str().map(adf).unwrap_or_else(|| value.clone())
+    Ok(if id == "description" || custom.ends_with(":textarea") {
+        if version == 3 {
+            value
+                .as_str()
+                .map(markdown_to_adf)
+                .unwrap_or_else(|| value.clone())
+        } else {
+            value
+                .as_str()
+                .map(markdown_to_plain_text)
+                .map(Value::String)
+                .unwrap_or_else(|| value.clone())
+        }
     } else {
         value.clone()
     })
@@ -1182,9 +1188,9 @@ fn create(jira: &mut Jira, args: &CreateArgs) -> Result<Value> {
         fields.insert(
             "description".into(),
             if jira.version() == 3 {
-                adf(&description)
+                markdown_to_adf(&description)
             } else {
-                json!(description)
+                json!(markdown_to_plain_text(&description))
             },
         );
     }
@@ -1347,13 +1353,6 @@ fn issue_markdown(issue: &Value, server: &str) -> Result<String> {
                 .as_array()
                 .context("Invalid ADF description: missing content")?;
             for block in blocks {
-                let heading = if block["type"] == "heading" {
-                    "#".repeat(block["attrs"]["level"].as_u64().unwrap_or(2).clamp(1, 6) as usize)
-                        + " "
-                } else {
-                    String::new()
-                };
-                output.push_str(&heading);
                 output.push_str(&adf_text(block)?);
                 output.push_str("\n\n");
             }
@@ -1367,74 +1366,114 @@ fn issue_markdown(issue: &Value, server: &str) -> Result<String> {
 
 fn adf_text(node: &Value) -> Result<String> {
     let kind = node["type"].as_str().context("ADF node has no type")?;
-    if kind == "hardBreak" {
-        return Ok("\n".into());
-    }
-    if kind == "mention" {
-        return Ok(node["attrs"]["text"].as_str().unwrap_or("@unknown").into());
-    }
-    if kind == "emoji" {
-        return Ok(node["attrs"]["shortName"]
+    let children = || -> Result<Vec<String>> {
+        node["content"]
+            .as_array()
+            .map(|content| content.iter().map(adf_text).collect())
+            .unwrap_or_else(|| Ok(Vec::new()))
+    };
+    let result = match kind {
+        "text" => {
+            let mut text = node["text"].as_str().unwrap_or_default().to_string();
+            if let Some(marks) = node["marks"].as_array() {
+                for mark in marks.iter().rev() {
+                    match mark["type"].as_str().unwrap_or_default() {
+                        "strong" => text = format!("**{text}**"),
+                        "em" => text = format!("*{text}*"),
+                        "strike" => text = format!("~~{text}~~"),
+                        "code" => text = format!("`{text}`"),
+                        "link" => {
+                            let url = mark["attrs"]["href"].as_str().unwrap_or_default();
+                            text = format!("[{text}]({url})");
+                        }
+                        "underline" => text = format!("__{text}__"),
+                        "subsup" => match mark["attrs"]["type"].as_str() {
+                            Some("sub") => text = format!("~{text}~"),
+                            Some("sup") => text = format!("^{text}^"),
+                            _ => {}
+                        },
+                        "textColor" | "backgroundColor" | "annotation" => {}
+                        other => bail!("Unsupported ADF mark type {other} in markdown output"),
+                    }
+                }
+            }
+            text
+        }
+        "hardBreak" => "\n".into(),
+        "mention" => node["attrs"]["text"].as_str().unwrap_or("@unknown").into(),
+        "emoji" => node["attrs"]["shortName"]
             .as_str()
             .unwrap_or_default()
-            .into());
-    }
-    if ["inlineCard", "blockCard"].contains(&kind) {
-        return Ok(node["attrs"]["url"].as_str().unwrap_or_default().into());
-    }
-    if ["media", "mediaGroup", "mediaSingle"].contains(&kind) {
-        return Ok("[media]".into());
-    }
-    if kind == "rule" {
-        return Ok("---".into());
-    }
-    if ![
-        "text",
-        "paragraph",
-        "heading",
-        "bulletList",
-        "orderedList",
-        "listItem",
-        "blockquote",
-        "codeBlock",
-        "table",
-        "tableRow",
-        "tableCell",
-        "tableHeader",
-    ]
-    .contains(&kind)
-    {
-        bail!("Unsupported ADF node type {kind} in markdown output");
-    }
-    let mut result = node["text"].as_str().unwrap_or_default().to_string();
-    if let Some(content) = node["content"].as_array() {
-        for (index, child) in content.iter().enumerate() {
-            let text = adf_text(child)?;
-            if kind == "bulletList" {
-                result.push_str("- ");
-            }
-            if kind == "orderedList" {
-                result.push_str(&format!("{}. ", index + 1));
-            }
-            if kind == "blockquote" {
-                result.push_str("> ");
-            }
-            result.push_str(&text);
-            if ["bulletList", "orderedList", "blockquote", "tableRow"].contains(&kind) {
-                result.push('\n');
+            .into(),
+        "inlineCard" | "blockCard" => node["attrs"]["url"].as_str().unwrap_or_default().into(),
+        "media" | "mediaGroup" | "mediaSingle" => "[media]".into(),
+        "rule" => "---".into(),
+        "paragraph" => children()?.join(""),
+        "heading" => {
+            let level = node["attrs"]["level"].as_u64().unwrap_or(2).clamp(1, 6) as usize;
+            format!("{} {}", "#".repeat(level), children()?.join(""))
+        }
+        "bulletList" | "orderedList" => {
+            let ordered = kind == "orderedList";
+            let start = node["attrs"]["order"].as_u64().unwrap_or(1);
+            children()?
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let prefix = if ordered {
+                        format!("{}. ", start + index as u64)
+                    } else {
+                        "- ".into()
+                    };
+                    format!("{prefix}{}", item.trim().replace('\n', "\n  "))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        "listItem" => children()?.join("\n"),
+        "blockquote" => children()?
+            .join("\n\n")
+            .lines()
+            .map(|line| format!("> {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "codeBlock" => {
+            let language = node["attrs"]["language"].as_str().unwrap_or_default();
+            format!("```{language}\n{}\n```", children()?.join(""))
+        }
+        "table" => {
+            let rows = children()?;
+            if let Some(header) = rows.first() {
+                let columns = header.matches('|').count().saturating_sub(1);
+                let separator = format!("|{}|", " --- |".repeat(columns));
+                std::iter::once(header.clone())
+                    .chain(std::iter::once(separator))
+                    .chain(rows.iter().skip(1).cloned())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                String::new()
             }
         }
-    }
-    if kind == "codeBlock" {
-        result = format!("```\n{result}\n```");
-    }
+        "tableRow" => format!("| {} |", children()?.join(" | ")),
+        "tableCell" | "tableHeader" => children()?.join(""),
+        _ => bail!("Unsupported ADF node type {kind} in markdown output"),
+    };
     Ok(result)
 }
 
 fn comment(jira: &Jira, command: &CommentCommand) -> Result<Value> {
     let (key, id, method, text) = match command {
-        CommentCommand::List { key } => {
-            return jira.get(&format!("/issue/{}/comment", encoded(key)))
+        CommentCommand::List { key, markdown } => {
+            let response = jira.get(&format!("/issue/{}/comment", encoded(key)))?;
+            return if *markdown {
+                if jira.version() != 3 {
+                    bail!("Markdown comment rendering requires Jira API v3 ADF responses");
+                }
+                comments_markdown(&response)
+            } else {
+                Ok(response)
+            };
         }
         CommentCommand::Add {
             key,
@@ -1445,7 +1484,7 @@ fn comment(jira: &Jira, command: &CommentCommand) -> Result<Value> {
             if *internal {
                 let text = body(text.as_deref(), file.as_ref())?
                     .context("Comment text or --file is required")?;
-                return jira.add_internal_comment(key, &text);
+                return jira.add_internal_comment(key, &markdown_to_plain_text(&text));
             }
             (
                 key,
@@ -1481,7 +1520,9 @@ fn comment(jira: &Jira, command: &CommentCommand) -> Result<Value> {
         None
     } else {
         let text = text.context("Comment text or --file is required")?;
-        Some(json!({"body": if jira.version() == 3 { adf(&text) } else { json!(text) }}))
+        Some(
+            json!({"body": if jira.version() == 3 { markdown_to_adf(&text) } else { json!(markdown_to_plain_text(&text)) }}),
+        )
     };
     let response = jira.write(method.clone(), &path, payload.as_ref())?;
     Ok(if method == Method::DELETE {
@@ -1491,6 +1532,40 @@ fn comment(jira: &Jira, command: &CommentCommand) -> Result<Value> {
     } else {
         response
     })
+}
+
+fn comments_markdown(response: &Value) -> Result<Value> {
+    let comments = response["comments"]
+        .as_array()
+        .or_else(|| response["values"].as_array());
+    let Some(comments) = comments else {
+        return Ok(response.clone());
+    };
+    let comments = comments
+        .iter()
+        .map(|comment| -> Result<Value> {
+            let mut rendered = comment.clone();
+            if comment["body"]["type"] == "doc" {
+                let blocks = comment["body"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(adf_text)
+                    .collect::<Result<Vec<_>>>()?;
+                rendered["body"] = json!(blocks.join("\n\n"));
+            }
+            Ok(rendered)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if response["comments"].is_array() {
+        let mut result = response.clone();
+        result["comments"] = json!(comments);
+        Ok(result)
+    } else {
+        let mut result = response.clone();
+        result["values"] = json!(comments);
+        Ok(result)
+    }
 }
 
 fn remote_link(jira: &Jira, command: &RemoteLinkCommand) -> Result<Value> {
@@ -1818,7 +1893,7 @@ mod tests {
         let path = dir.path().join("fields.json");
         fs::write(
             &path,
-            r#"{"customfield_10010":"Orders blocked","customfield_10011":{"id":"2"}}"#,
+            r#"{"customfield_10010":"**Orders** blocked","customfield_10011":{"id":"2"}}"#,
         )
         .unwrap();
         let mut client = configured_client(server);
@@ -1826,6 +1901,11 @@ mod tests {
         assert_eq!(
             preview["request"]["fields"]["customfield_10010"]["type"],
             "doc"
+        );
+        assert_eq!(
+            preview["request"]["fields"]["customfield_10010"]["content"][0]["content"][0]["marks"]
+                [0]["type"],
+            "strong"
         );
         thread.join().unwrap();
         assert_eq!(captured.lock().unwrap().len(), 2);
@@ -2117,7 +2197,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_metadata_fallback_sends_v2_description_and_username() {
+    fn edit_metadata_fallback_sends_v2_plain_text_description_and_username() {
         let (server, captured, thread) = fixture(vec![
             (404, json!({})),
             (
@@ -2141,7 +2221,7 @@ mod tests {
             &IssueCommand::Edit {
                 key: "TEST-1".into(),
                 summary: None,
-                description: Some("Plain text".into()),
+                description: Some("**Plain** text".into()),
                 description_file: None,
                 fields_file: None,
                 assignee: Some("john".into()),
@@ -2156,7 +2236,11 @@ mod tests {
         assert!(requests[0].starts_with("GET /rest/api/3/issue/TEST-1/editmeta "));
         assert!(requests[1].starts_with("GET /rest/api/2/issue/TEST-1/editmeta "));
         assert!(requests[2].starts_with("PUT /rest/api/2/issue/TEST-1 "));
-        assert!(requests[2].contains("\"description\":\"Plain text\""));
+        assert!(
+            requests[2].contains("\"description\":\"Plain text\""),
+            "{}",
+            requests[2]
+        );
         assert!(requests[2].contains("\"assignee\":{\"name\":\"john\"}"));
     }
 
@@ -2213,7 +2297,7 @@ mod tests {
         ]);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note.txt");
-        fs::write(&path, "internal\nnote").unwrap();
+        fs::write(&path, "**internal** [note](https://example.com)").unwrap();
         let client = configured_client(server);
         assert_eq!(
             comment(
@@ -2233,7 +2317,7 @@ mod tests {
                 &client,
                 &CommentCommand::Add {
                     key: "TEST-1".into(),
-                    text: Some("public note".into()),
+                    text: Some("**public** note".into()),
                     file: None,
                     internal: false,
                 },
@@ -2245,9 +2329,10 @@ mod tests {
         let requests = captured.lock().unwrap();
         assert_eq!(requests.len(), 2);
         assert!(requests[0].starts_with("POST /rest/servicedeskapi/request/TEST-1/comment "));
-        assert!(requests[0].contains("\"body\":\"internal\\nnote\""));
+        assert!(requests[0].contains("\"body\":\"internal note (https://example.com)\""));
         assert!(requests[1].starts_with("POST /rest/api/3/issue/TEST-1/comment "));
         assert!(requests[1].contains("\"type\":\"doc\""));
+        assert!(requests[1].contains("\"type\":\"strong\""));
     }
 
     #[test]
@@ -2342,12 +2427,41 @@ mod tests {
 
     #[test]
     fn issue_markdown_renders_adf_and_rejects_unknown_description() {
-        let issue = json!({"key": "TEST-1", "fields": {"summary": "Task", "description": adf("Hello\nworld")}});
+        let issue = json!({"key": "TEST-1", "fields": {"summary": "Task", "description": markdown_to_adf("Hello **bold** and [link](https://example.com)\nworld")}});
         let output = issue_markdown(&issue, "https://jira.example").unwrap();
-        assert!(output.contains("Hello\nworld"));
+        assert!(output.contains("Hello **bold** and [link](https://example.com)\nworld"));
         assert!(output.contains("https://jira.example/browse/TEST-1"));
         let invalid = json!({"key": "TEST-1", "fields": {"summary": "Task", "description": {"unknown": true}}});
         assert!(issue_markdown(&invalid, "https://jira.example").is_err());
+    }
+
+    #[test]
+    fn adf_description_markdown_preserves_lists_and_code_blocks() {
+        let description = json!({"type":"doc", "version":1, "content":[
+            {"type":"bulletList", "content":[
+                {"type":"listItem", "content":[{"type":"paragraph", "content":[{"type":"text", "text":"first"}]}]},
+                {"type":"listItem", "content":[{"type":"paragraph", "content":[{"type":"text", "text":"second"}]}]}
+            ]},
+            {"type":"codeBlock", "attrs":{"language":"rust"}, "content":[{"type":"text", "text":"let x = 1;"}]}
+        ]});
+        let issue = json!({"key":"TEST-1", "fields":{"summary":"Task", "description":description}});
+        let markdown = issue_markdown(&issue, "https://jira.example").unwrap();
+        assert!(markdown.contains("- first\n- second"));
+        assert!(markdown.contains("```rust\nlet x = 1;\n```"));
+    }
+
+    #[test]
+    fn comment_list_markdown_renders_adf_bodies() {
+        let response = json!({"startAt": 0, "comments": [{
+            "id": "7",
+            "body": markdown_to_adf("**Rich** comment with [link](https://example.com)")
+        }]});
+        let rendered = comments_markdown(&response).unwrap();
+        assert_eq!(
+            rendered["comments"][0]["body"],
+            "**Rich** comment with [link](https://example.com)"
+        );
+        assert_eq!(rendered["startAt"], 0);
     }
 
     #[test]

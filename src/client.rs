@@ -1,5 +1,6 @@
 use crate::config::Profile;
 use anyhow::{bail, Context, Result};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use reqwest::blocking::{Client, RequestBuilder};
 use serde_json::{json, Value};
 use std::cell::Cell;
@@ -500,27 +501,248 @@ pub fn encoded(value: &str) -> String {
     result
 }
 
-pub fn adf(text: &str) -> Value {
-    let content = text
-        .split("\n\n")
-        .map(|block| {
-            let mut nodes = Vec::new();
-            for (index, line) in block.split('\n').enumerate() {
-                if index > 0 {
-                    nodes.push(json!({"type": "hardBreak"}));
+pub fn markdown_to_adf(markdown: &str) -> Value {
+    let mut content = Vec::new();
+    let mut containers: Vec<Value> = Vec::new();
+    let mut marks: Vec<Value> = Vec::new();
+    let mut table_header = false;
+
+    let append = |node: Value, containers: &mut Vec<Value>, content: &mut Vec<Value>| {
+        if let Some(parent) = containers.last_mut() {
+            parent["content"].as_array_mut().unwrap().push(node);
+        } else {
+            content.push(node);
+        }
+    };
+
+    for event in Parser::new_ext(
+        markdown,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
+    ) {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::Paragraph => containers.push(json!({"type": "paragraph", "content": []})),
+                Tag::Heading { level, .. } => containers.push(json!({
+                    "type": "heading",
+                    "attrs": {"level": heading_level(level)},
+                    "content": []
+                })),
+                Tag::BlockQuote(_) => containers.push(json!({"type": "blockquote", "content": []})),
+                Tag::CodeBlock(kind) => {
+                    let language = match kind {
+                        CodeBlockKind::Fenced(info) => {
+                            info.split_whitespace().next().unwrap_or("").to_string()
+                        }
+                        CodeBlockKind::Indented => String::new(),
+                    };
+                    let mut node = json!({"type": "codeBlock", "content": []});
+                    if !language.is_empty() {
+                        node["attrs"] = json!({"language": language});
+                    }
+                    containers.push(node);
                 }
-                if !line.is_empty() {
-                    nodes.push(json!({"type": "text", "text": line}));
+                Tag::List(start) => {
+                    let mut node = if let Some(start) = start {
+                        json!({"type": "orderedList", "attrs": {"order": start}, "content": []})
+                    } else {
+                        json!({"type": "bulletList", "content": []})
+                    };
+                    if node["type"] == "orderedList" && node["attrs"]["order"].is_null() {
+                        node["attrs"]["order"] = json!(1);
+                    }
+                    containers.push(node);
+                }
+                Tag::Item => containers.push(json!({"type": "listItem", "content": []})),
+                Tag::Table(_) => containers.push(json!({
+                    "type": "table",
+                    "attrs": {"isNumberColumnEnabled": false, "layout": "default"},
+                    "content": []
+                })),
+                Tag::TableHead => {
+                    table_header = true;
+                    containers.push(json!({"type": "tableRow", "content": []}));
+                }
+                Tag::TableRow => {
+                    table_header = false;
+                    containers.push(json!({"type": "tableRow", "content": []}));
+                }
+                Tag::TableCell => {
+                    containers.push(json!({"type": if table_header { "tableHeader" } else { "tableCell" }, "content": []}));
+                    containers.push(json!({"type": "paragraph", "content": []}));
+                }
+                Tag::Emphasis => marks.push(json!({"type": "em"})),
+                Tag::Strong => marks.push(json!({"type": "strong"})),
+                Tag::Strikethrough => marks.push(json!({"type": "strike"})),
+                Tag::Link { dest_url, .. } => {
+                    marks.push(json!({"type": "link", "attrs": {"href": dest_url.to_string()}}));
+                }
+                Tag::Image { dest_url, .. } => {
+                    marks.push(json!({"type": "link", "attrs": {"href": dest_url.to_string()}}));
+                }
+                _ => {}
+            },
+            Event::End(tag) => match tag {
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::BlockQuote(_)
+                | TagEnd::CodeBlock
+                | TagEnd::List(_)
+                | TagEnd::Item
+                | TagEnd::TableHead
+                | TagEnd::TableRow
+                | TagEnd::TableCell => {
+                    if let Some(node) = containers.pop() {
+                        append(node, &mut containers, &mut content);
+                    }
+                    if tag == TagEnd::TableCell {
+                        if let Some(node) = containers.pop() {
+                            append(node, &mut containers, &mut content);
+                        }
+                    }
+                }
+                TagEnd::Table => {
+                    if let Some(node) = containers.pop() {
+                        append(node, &mut containers, &mut content);
+                    }
+                }
+                TagEnd::Emphasis
+                | TagEnd::Strong
+                | TagEnd::Strikethrough
+                | TagEnd::Link
+                | TagEnd::Image => {
+                    marks.pop();
+                }
+                _ => {}
+            },
+            Event::Text(text) => {
+                if !text.is_empty() {
+                    let mut node = json!({"type": "text", "text": text.to_string()});
+                    if !marks.is_empty() {
+                        node["marks"] = json!(marks);
+                    }
+                    append(node, &mut containers, &mut content);
                 }
             }
-            if nodes.is_empty() {
-                json!({"type": "paragraph"})
-            } else {
-                json!({"type": "paragraph", "content": nodes})
+            Event::Code(text) => {
+                if !text.is_empty() {
+                    let mut text_marks = marks.clone();
+                    text_marks.push(json!({"type": "code"}));
+                    append(
+                        json!({"type": "text", "text": text.to_string(), "marks": text_marks}),
+                        &mut containers,
+                        &mut content,
+                    );
+                }
             }
-        })
-        .collect::<Vec<_>>();
+            Event::SoftBreak | Event::HardBreak => {
+                append(json!({"type": "hardBreak"}), &mut containers, &mut content);
+            }
+            Event::Rule => append(json!({"type": "rule"}), &mut containers, &mut content),
+            Event::Html(html) | Event::InlineHtml(html) => {
+                append(
+                    json!({"type": "text", "text": html.to_string()}),
+                    &mut containers,
+                    &mut content,
+                );
+            }
+            Event::TaskListMarker(checked) => append(
+                json!({"type": "text", "text": if checked { "☑ " } else { "☐ " }}),
+                &mut containers,
+                &mut content,
+            ),
+            Event::FootnoteReference(label) => append(
+                json!({"type": "text", "text": format!("[^{label}]")}),
+                &mut containers,
+                &mut content,
+            ),
+            Event::InlineMath(math) | Event::DisplayMath(math) => append(
+                json!({"type": "text", "text": math.to_string()}),
+                &mut containers,
+                &mut content,
+            ),
+        }
+    }
+    while let Some(node) = containers.pop() {
+        append(node, &mut containers, &mut content);
+    }
     json!({"type": "doc", "version": 1, "content": content})
+}
+
+pub fn markdown_to_plain_text(markdown: &str) -> String {
+    let mut output = String::new();
+    let mut links = Vec::new();
+    let mut ordered_lists = Vec::<u64>::new();
+    for event in Parser::new_ext(markdown, Options::all()) {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::Link { dest_url, .. } => links.push(dest_url.to_string()),
+                Tag::List(start) => ordered_lists.push(start.unwrap_or(0)),
+                Tag::Item => {
+                    if let Some(number) = ordered_lists.last_mut() {
+                        if *number > 0 {
+                            output.push_str(&format!("{number}. "));
+                            *number += 1;
+                        } else {
+                            output.push_str("- ");
+                        }
+                    } else {
+                        output.push_str("- ");
+                    }
+                }
+                Tag::BlockQuote(_) => output.push_str("> "),
+                _ => {}
+            },
+            Event::End(tag) => match tag {
+                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::CodeBlock => {
+                    output.push_str("\n\n");
+                }
+                TagEnd::Item => {
+                    if !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                }
+                TagEnd::List(_) => {
+                    ordered_lists.pop();
+                    if !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                }
+                TagEnd::Link => {
+                    if let Some(url) = links.pop() {
+                        if !url.is_empty() {
+                            output.push_str(" (");
+                            output.push_str(&url);
+                            output.push(')');
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Event::Text(text) | Event::Code(text) => output.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => output.push('\n'),
+            Event::Rule => output.push_str("\n---\n"),
+            Event::TaskListMarker(checked) => {
+                output.push_str(if checked { "[x] " } else { "[ ] " })
+            }
+            Event::FootnoteReference(label) => {
+                output.push_str(&format!("[^{label}]"));
+            }
+            Event::InlineMath(math) | Event::DisplayMath(math) => output.push_str(&math),
+            Event::Html(_) | Event::InlineHtml(_) => {}
+        }
+    }
+    output.trim().to_string()
+}
+
+fn heading_level(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
 }
 
 #[cfg(test)]
@@ -889,6 +1111,44 @@ mod tests {
     }
     #[test]
     fn adf_preserves_paragraphs() {
-        assert_eq!(adf("one\n\ntwo")["content"].as_array().unwrap().len(), 2);
+        let document = markdown_to_adf("one\n\ntwo");
+        assert_eq!(document["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn markdown_to_adf_preserves_common_formatting() {
+        let document =
+            markdown_to_adf("# Title\n\n**bold** and *italic* with `code`\n\n- first\n- second");
+        let content = document["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "heading");
+        assert_eq!(content[0]["attrs"]["level"], 1);
+        assert_eq!(content[1]["content"][0]["marks"][0]["type"], "strong");
+        assert_eq!(content[1]["content"][2]["marks"][0]["type"], "em");
+        assert_eq!(content[1]["content"][4]["marks"][0]["type"], "code");
+        assert_eq!(content[2]["type"], "bulletList");
+        assert_eq!(content[2]["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn markdown_to_adf_converts_tables_to_valid_cell_nodes() {
+        let document = markdown_to_adf("| Name | Value |\n| --- | --- |\n| a | b |");
+        assert_eq!(document["content"][0]["type"], "table");
+        assert_eq!(document["content"][0]["content"][0]["type"], "tableRow");
+        assert_eq!(
+            document["content"][0]["content"][0]["content"][0]["type"],
+            "tableHeader"
+        );
+        assert_eq!(
+            document["content"][0]["content"][1]["content"][0]["type"],
+            "tableCell"
+        );
+    }
+
+    #[test]
+    fn markdown_to_plain_text_strips_formatting_syntax_and_keeps_link_target() {
+        assert_eq!(
+            markdown_to_plain_text("# **Title**\n\nSee [the docs](https://example.com)."),
+            "Title\n\nSee the docs (https://example.com)."
+        );
     }
 }

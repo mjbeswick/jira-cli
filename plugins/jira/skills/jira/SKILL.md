@@ -371,7 +371,12 @@ jira issue comment list PROJ-123 --format json
 
 ### `issue comment edit <commentId> [text]`
 
-Edit an existing comment.
+Edit an existing comment. This replaces the comment body; the npm CLI converts
+Markdown to rich Jira ADF for API v3 and plain text for API v2. Editing is a
+mutation: an agent may edit only when the user explicitly requests it and
+approves the exact issue key, comment ID, complete replacement body, and
+preserved visibility. Read the existing comment first; never change a private
+comment to public. Comment deletion is not authorized by an edit request.
 
 ```sh
 jira issue comment edit <commentId> [text] --issue <key> [--file <path>]

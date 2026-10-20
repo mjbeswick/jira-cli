@@ -55,6 +55,16 @@ profile; `JIRA_PROFILE` does the same. The full-path Rust `jira config show`
 redacts credentials.
 Never output or persist tokens or cookies in task logs.
 
+Descriptions and public comments accept Markdown; Jira API v3 writes convert it
+to Atlassian Document Format (ADF), and `issue view --format markdown` converts
+the description back to Markdown. Public comment edits preserve rich formatting.
+Use `issue comment list KEY --markdown` to render ADF comment bodies as Markdown.
+To edit a comment, use `issue comment edit KEY COMMENT_ID [TEXT]` or `--file`;
+this replaces the existing body rather than appending a new comment. Jira API v2
+and internal notes use plain text,
+so formatting syntax is stripped while visible text and link destinations are
+preserved.
+
 ## Issue creation
 
 1. Establish project/type and search for duplicates.
