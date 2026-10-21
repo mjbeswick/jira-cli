@@ -5,13 +5,13 @@
     "name": "pchuri"
   },
   "metadata": {
-    "description": "Claude Code plugins for Atlassian Jira CLI.",
+    "description": "Claude Code skill for the Rust Atlassian Jira CLI.",
     "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "jira",
-      "description": "Use jira-cli to configure Jira access and manage issues, comments, remote links, projects, and sprints from the terminal.",
+      "description": "Discover and use the Rust jira CLI to inspect Jira issues, projects, sprints, comments, remote links, and attachments.",
       "source": "./plugins/jira"
     }
   ]

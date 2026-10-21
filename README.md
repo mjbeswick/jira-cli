@@ -1,19 +1,19 @@
-# Jira CLI (Rust candidate)
+# Jira CLI
 
-A non-interactive Jira command-line client built in Rust. Designed for automation: explicit flags, structured JSON output, project-specific field discovery, single-shot writes, and preflight issue creation. This repository still contains the published npm/JavaScript CLI; **the Rust binary is not yet the active `jira` command on PATH**. The local installer places the Rust binary named `jira` in an isolated directory until live Rust-to-Jira verification and a deliberate cutover are complete.
+A non-interactive Jira command-line client built in Rust. Designed for people and automation: explicit flags, structured JSON output, project-specific field discovery, single-shot writes, preflight issue creation, and agent skill discovery.
 
-## Build and install the candidate
+## Install
 
 Requires Rust and Cargo. From this checkout:
 
 ```sh
-sh scripts/install-rust.sh
-~/.local/share/jira-cli-rust/bin/jira --help
+cargo install --path . --locked --force
+jira --help
 ```
 
-The script compiles this checkout with `cargo build --release --locked` and installs `${JIRA_RUST_INSTALL_ROOT:-$HOME/.local/share/jira-cli-rust}/bin/jira`. It neither runs a remote installer nor replaces the npm-managed `jira` executable on PATH. Use the full path above to inspect this candidate; do not add its directory to PATH until the Jira specialist workflow and verification gate have been updated. During development use `cargo run -- --help` or `cargo run -- --json issue list --project PROJ` where policy permits.
-
-> For the currently published npm CLI, see [legacy JavaScript documentation](docs/legacy-javascript-cli.md). Its command flags differ from the Rust CLI. [Rust preview status and limitations](docs/rust-preview.md) describe what remains before cutover.
+This installs or updates the Rust binary as `jira` in Cargo's bin directory (normally
+`~/.cargo/bin`). Ensure that directory is on `PATH`. To build without installing,
+use `cargo run -- --help`.
 
 ## Command reference
 
@@ -23,44 +23,50 @@ Use the full-path Rust `jira --help` and `<command> --help` for exact options. R
 |---|---|
 | `config` | `show`, `set <key> <value>`, `unset <key>`, `test` |
 | `profile` | `list`, `add`, `use`, `remove` |
-| `issue` | `list`, `view`, `create-fields`, `create`, `edit`, `delete`, `flag`, `unflag`, `transitions`, `transition` |
+| `issue` | `list`, `view`, `create-fields`, `create`, `edit`, `delete`, `flag`, `unflag`, `transitions`, `transition`, `attachment list`, `attachment download` |
 | `issue comment` | `list`, `add`, `edit`, `delete` |
 | `issue remote-link` | `list`, `add`, `update`, `delete` |
 | `project` | `list`, `view`, `components`, `versions` |
 | `sprint` | `boards`, `list`, `active` |
-| `skills` | `list` (discover skills packaged with the Rust CLI) |
-| `install-skill` | Copy the packaged **Rust** agent skill to a chosen directory |
+| `skills` | `list`, `show <name>`, `install [--target claude|opencode|agents] [--force]` |
+| `install-skill` | Copy the bundled Jira skill to an explicit directory |
 | `completions` | Generate shell completions for Bash, Elvish, Fish, PowerShell, or Zsh |
 
 ```sh
-~/.local/share/jira-cli-rust/bin/jira --json issue list --project PROJ --limit 20
-~/.local/share/jira-cli-rust/bin/jira --json issue view PROJ-123
-~/.local/share/jira-cli-rust/bin/jira issue view PROJ-123 --format markdown --output ./issue.md
-~/.local/share/jira-cli-rust/bin/jira --json issue transitions PROJ-123
-~/.local/share/jira-cli-rust/bin/jira --json sprint boards
-~/.local/share/jira-cli-rust/bin/jira --json sprint list --board 10636 --state active
-~/.local/share/jira-cli-rust/bin/jira --json skills list
+jira --json issue list --project PROJ --limit 20
+jira --json issue view PROJ-123
+jira issue view PROJ-123 --format markdown --output ./issue.md
+jira --json issue transitions PROJ-123
+jira --json issue attachment list PROJ-123
+jira issue attachment download PROJ-123 10050 --output ./image.png
+jira --json skills list
+jira skills show jira
+jira skills install
 ```
 
-`skills list` reports skills packaged with this CLI and their install command. It
-does not determine whether a particular agent has loaded or can use a skill.
+`skills list` shows the bundled Jira skill and skills found in common project
+and home directories used by Claude Code, OpenCode, and other agents. `skills
+show jira` prints the bundled instructions. `skills install` installs the bundled
+skill for the supported agent hosts; use `--target` to select one. Discovery
+depends on the host scanning the corresponding directory, so listing a skill
+does not guarantee a particular agent has loaded it.
 
 ### Shell completions
 
-Generate completions from the Rust candidate's command definitions and install them for your shell. These scripts complete command names and flags; they do not query Jira for issue, project, or profile values.
+Generate completions from the Rust command definitions and install them for your shell. These scripts complete command names and flags; they do not query Jira for issue, project, or profile values.
 
 ```sh
 # Bash (current shell)
-source <(~/.local/share/jira-cli-rust/bin/jira completions bash)
+source <(jira completions bash)
 
 # Zsh (persist in a completion directory on fpath)
 mkdir -p ~/.zfunc
-~/.local/share/jira-cli-rust/bin/jira completions zsh > ~/.zfunc/_jira
+jira completions zsh > ~/.zfunc/_jira
 # Add `fpath=(~/.zfunc $fpath); autoload -Uz compinit; compinit` to ~/.zshrc
 
 # Fish (persist for future shells)
 mkdir -p ~/.config/fish/completions
-~/.local/share/jira-cli-rust/bin/jira completions fish > ~/.config/fish/completions/jira.fish
+jira completions fish > ~/.config/fish/completions/jira.fish
 ```
 
 PowerShell and Elvish scripts are available with `jira completions powershell` and `jira completions elvish`; follow the shell's normal profile or completion-script setup to load them.
@@ -79,17 +85,17 @@ paths while preserving visible text and link destinations.
 
 ## Configuration and credentials
 
-The CLI reads and writes `~/.jira-cli/config.json`, compatible with the npm multi-profile store; `JIRA_CLI_CONFIG_DIR` changes its directory. An older single-profile config is migrated to the default profile on first use without removing the source. On Unix, new config files and directories have restrictive permissions. `config show` and `profile list` redact tokens and cookies.
+The CLI reads and writes `~/.jira-cli/config.json`; `JIRA_CLI_CONFIG_DIR` changes its directory. Existing multi-profile configurations are preserved, and an older single-profile config is migrated to the default profile on first use without removing the source. On Unix, new config files and directories have restrictive permissions. `config show` and `profile list` redact tokens and cookies.
 
 ```sh
 # Prefer your approved secret-management process for credentials:
 export JIRA_HOST=https://jira.example.com
 export JIRA_API_TOKEN=...  # obtain securely; do not paste into logs
-~/.local/share/jira-cli-rust/bin/jira config test
+jira config test
 
 # Or configure a named profile:
-~/.local/share/jira-cli-rust/bin/jira profile add work --server https://jira.example.com --auth-type bearer
-~/.local/share/jira-cli-rust/bin/jira --profile work config show
+jira profile add work --server https://jira.example.com --auth-type bearer
+jira --profile work config show
 ```
 
 The CLI accepts `JIRA_HOST` (or legacy `JIRA_DOMAIN`), `JIRA_USERNAME`, `JIRA_API_TOKEN`, `JIRA_CLOUD_ID`, `JIRA_COOKIE`, `JIRA_AUTH_TYPE`, `JIRA_API_VERSION`, `JIRA_PROFILE`, and `JIRA_TLS_CLIENT_CERT`, `JIRA_TLS_CLIENT_KEY`, `JIRA_TLS_CA_CERT`. Explicit `--profile` overrides `JIRA_PROFILE`, which overrides the active profile. Authentication modes: Basic (username + token), Bearer (token), cookie, and mTLS (certificate + PKCS#8 PEM key; optional CA). A Cloud ID routes requests through Atlassian's API gateway. `JIRA_API_VERSION=auto` uses v3 with eligible **read-only** fallback to v2; pinned `2` or `3` is supported. The CLI never retries or replays a write because its outcome could be ambiguous.
@@ -99,7 +105,7 @@ The CLI accepts `JIRA_HOST` (or legacy `JIRA_DOMAIN`), `JIRA_USERNAME`, `JIRA_AP
 Do not infer custom field IDs from example values or another Jira project. Discover the actual create screen for the target project and type:
 
 ```sh
-~/.local/share/jira-cli-rust/bin/jira --json issue create-fields --project PROJ --type Task
+jira --json issue create-fields --project PROJ --type Task
 ```
 
 Prepare additional fields as JSON keyed by the returned IDs. This **illustrative** file must be updated to use the actual field IDs and allowed values:
@@ -113,7 +119,7 @@ Prepare additional fields as JSON keyed by the returned IDs. This **illustrative
 ```
 
 ```sh
-~/.local/share/jira-cli-rust/bin/jira --json issue create --project PROJ --type Task \
+jira --json issue create --project PROJ --type Task \
   --summary "Checkout investigation" --description-file ./description.md \
   --fields-file ./fields.json --dry-run
 ```
@@ -124,7 +130,7 @@ Create flags also support `--assignee` (Cloud account ID or Data Center username
 
 Comments can be supplied with text or `--file`. `issue comment add <key> --internal --file ./note.txt` uses Jira Service Management's request-comment API and **fails rather than posting publicly** if `public: false` is not confirmed. Transitions are checked against the issue's available transitions before writing. `issue flag` and `issue unflag` inspect editable field metadata and only update the Jira Software Flagged field. `--force` is required for deletion but never substitutes for user approval.
 
-## Development and release gate
+## Development and release
 
 ```sh
 cargo fmt --all -- --check
@@ -133,6 +139,6 @@ cargo test --locked
 cargo build --release --locked
 ```
 
-Rust tests use local simulated HTTP responses for custom fields, pagination, auth errors, and single-shot writes. The existing npm CLI has separate Jest/ESLint checks in CI. **A live Rust-to-Jira check has not been completed**: this workspace's Jira specialist is pinned to the installed npm CLI and cannot execute an alternate binary. Local tests and a ticket created through npm do not establish live Rust compatibility. Do not replace the globally installed `jira` command, remove the npm distribution, or publish the Rust CLI as a verified replacement until that policy/verification gate is resolved.
-
-This project has not deleted or recreated `mjbeswick/jira-cli`. Repository replacement is separate from building and testing the CLI and needs exact, fresh confirmation before any irreversible action.
+Tests use local simulated HTTP responses for pagination, attachment retrieval,
+auth errors, and single-shot writes. Releases are built from the Rust package;
+see the release workflow and `AGENTS.md` for the current versioning process.

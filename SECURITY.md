@@ -6,7 +6,7 @@ We support the following versions of JIRA CLI with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.x.x   | :white_check_mark: |
+| Current Rust release | :white_check_mark: |
 
 ## Reporting a Vulnerability
 

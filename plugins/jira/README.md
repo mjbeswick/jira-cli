@@ -1,6 +1,9 @@
-# jira Claude Code Plugin
+# Jira CLI agent skill
 
-Adds the `jira` skill to Claude Code so it understands `jira-cli` commands automatically.
+This plugin exposes the bundled Rust `jira` CLI skill to Claude Code. The binary
+also provides `jira skills list`, `jira skills show jira`, and `jira skills
+install` for discovery and installation into other supported agent skill
+directories.
 
 ## Install
 
@@ -9,11 +12,12 @@ Adds the `jira` skill to Claude Code so it understands `jira-cli` commands autom
 /plugin install jira@pchuri-jira-cli
 ```
 
-## Prerequisites
+## Install the CLI
 
 ```sh
-npm install -g @pchuri/jira-cli
-jira config --server "https://your-site.atlassian.net" --username "user@example.com" --token "your-api-token"
+cargo install --git https://github.com/pchuri/jira-cli --locked jira-cli
+jira --help
 ```
 
-See the [jira-cli README](https://github.com/pchuri/jira-cli#readme) for all authentication options (Bearer, Basic, scoped Cloud tokens, mTLS).
+See the [project README](https://github.com/pchuri/jira-cli#readme) for
+configuration, authentication, and agent skill installation details.

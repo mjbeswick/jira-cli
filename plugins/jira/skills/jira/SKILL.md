@@ -1,599 +1,102 @@
 ---
 name: jira
-description: Use jira-cli to configure Jira access and manage issues, comments, remote links, projects, and sprints from the terminal.
-argument-hint: <issue key, project key, sprint id, board id, or task description>
-allowed-tools: [Bash, Read, Write, Glob, Grep]
+description: Use the Rust jira CLI to inspect Jira issues, projects, sprints, comments, remote links, and attachments, and prepare approved issue changes.
 ---
 
-# jira-cli Skill
+# Jira CLI skill
 
-A CLI tool for Atlassian Jira. Lets you configure authentication, inspect issues and projects, create and update issues, manage comments and remote links, inspect sprint state, and install this skill into a project.
+Use the Rust `jira` executable. Ask the CLI for current command help when flags
+are unclear; do not substitute another Jira client. `jira skills list` discovers
+bundled and locally installed skills, `jira skills show jira` prints this skill,
+and `jira skills install` installs it for Claude Code, OpenCode, and `.agents`
+hosts. Use `--target claude|opencode|agents` to choose one host and `--force` to
+replace an existing copy. `jira install-skill --dest <dir>` remains available
+for an explicit destination.
 
-This skill documents the published npm CLI and its command syntax. The opt-in
-Rust candidate has different flags and a separate `jira-rust-candidate` skill;
-use that skill only when the active policy explicitly permits the Rust binary.
-The `jira completions <shell>` command is currently available only in the Rust
-candidate, not this npm CLI.
+Use `--json` for machine-readable output. It works before or after subcommands.
+Never log tokens, cookies, full configuration files, or issue data that contains
+sensitive information.
 
-## Installation
+## Setup and profiles
 
-```sh
-npm install -g @pchuri/jira-cli
-jira --version
-```
-
-## Configuration
-
-`jira-cli` is intentionally non-interactive. Prefer explicit flags or environment variables.
-
-### Environment variables
-
-| Variable | Description | Example |
-|---|---|---|
-| `JIRA_HOST` | Jira hostname or full URL | `your-site.atlassian.net` |
-| `JIRA_DOMAIN` | Legacy hostname variable | `your-site.atlassian.net` |
-| `JIRA_API_TOKEN` | API token or PAT | `ATATT3x...` |
-| `JIRA_USERNAME` | Email/username for Basic auth or scoped cloud tokens | `user@example.com` |
-| `JIRA_CLOUD_ID` | Atlassian Cloud ID for scoped tokens | `abcd-1234-...` |
-| `JIRA_AUTH_TYPE` | `basic`, `bearer`, or `mtls` | `bearer` |
-| `JIRA_TLS_CLIENT_CERT` | mTLS client certificate path | `~/.certs/client.pem` |
-| `JIRA_TLS_CLIENT_KEY` | mTLS client key path | `~/.certs/client.key` |
-| `JIRA_TLS_CA_CERT` | Optional CA certificate path | `~/.certs/ca.pem` |
-| `JIRA_API_VERSION` | API version behavior: `auto`, `2`, or `3` | `auto` |
-| `JIRA_COOKIE` | Raw session cookie sent alongside auth (for SSO-gated on-prem instances) | `MRHSession=...` |
-| `JIRA_PROFILE` | Selects which configuration profile to use | `work` |
-
-### CLI configuration
-
-Bearer auth:
-
-```sh
-jira config --server https://your-site.atlassian.net --token <token>
-```
-
-Basic auth:
-
-```sh
-jira config --server https://your-site.atlassian.net --username user@example.com --token <token>
-```
-
-Scoped cloud token:
-
-```sh
-jira config --server https://your-site.atlassian.net --username user@example.com --token <token> --cloud-id <cloudId>
-```
-
-mTLS:
-
-```sh
-jira config --server https://jira.example.com --auth-type mtls --tls-client-cert ~/.certs/client.pem --tls-client-key ~/.certs/client.key --tls-ca-cert ~/.certs/ca.pem
-```
-
-Show current configuration:
-
-```sh
-jira config --show
-```
-
-### Global options
-
-These apply at the root level:
-
-```sh
-jira [--config <path>] [--profile <name>] [--verbose] [--no-color] <command>
-```
-
-| Option | Description |
-|---|---|
-| `--config <path>` | Use a specific config file path |
-| `--profile <name>` | Use a specific configuration profile (see `profile` and `config --profile` below) |
-| `--verbose` | Enable verbose output |
-| `--no-color` | Disable ANSI color output |
-
-## CLI conventions
-
-- The CLI is non-interactive.
-- Provide explicit flags instead of expecting prompts.
-- Use `--force` for destructive or overwrite-style operations.
-- Use `--description-file` for multiline issue content.
-- Use `--file` where supported for multiline comment or payload input.
-- If a command errors, prefer surfacing the exact follow-up command the user should run.
-
-## Commands Reference
-
-### `config`
-
-Show or set configuration values.
-
-```sh
-jira config [--show] [--profile <name>] [--server <url>] [--username <username>] [--token <token>] [--cloud-id <cloudId>] [--auth-type <type>] [--tls-client-cert <path>] [--tls-client-key <path>] [--tls-ca-cert <path>] [--api-version <version>] [--cookie <value>]
-```
-
-Important options:
-
-| Option | Description |
-|---|---|
-| `--show` | Display current configuration |
-| `--profile <name>` | Operate on a specific configuration profile (creates it if it does not exist) - see `profile` below |
-| `--server <url>` | Jira base URL |
-| `--username <username>` | Username/email for Basic auth |
-| `--token <token>` | API token |
-| `--cloud-id <cloudId>` | Enables Atlassian scoped token routing |
-| `--auth-type <type>` | `basic`, `bearer`, or `mtls` |
-| `--tls-client-cert <path>` | mTLS client certificate |
-| `--tls-client-key <path>` | mTLS client key |
-| `--tls-ca-cert <path>` | Optional mTLS CA certificate |
-| `--api-version <version>` | `auto` (default), `2`, or `3` |
-| `--cookie <value>` | Raw session cookie sent alongside auth (for SSO-gated on-prem instances) |
-
-```sh
-jira config --show
-jira config --server https://your-site.atlassian.net --token <token>
-jira config --profile work --server https://work.atlassian.net --token <token>
-```
-
-### `config get [key]`
-
-Read a configuration value.
-
-```sh
-jira config get [key]
-```
-
-```sh
-jira config get
-jira config get server
-```
-
-### `config set <key> <value>`
-
-Set a single configuration value.
-
-```sh
-jira config set <key> <value>
-```
+Configure credentials through the established secure environment or local
+profile configuration. `jira config show` redacts secrets; `jira config test`
+checks connectivity without printing account details.
 
 ```sh
 jira config set server https://your-site.atlassian.net
-jira config set cloudId <cloudId>
-jira config set apiVersion auto
-```
-
-### `config unset <key>`
-
-Remove a single configuration value.
-
-```sh
-jira config unset <key>
-```
-
-```sh
-jira config unset cloudId
-```
-
-### `profile`
-
-Manage multiple named configuration profiles (e.g. more than one Jira instance).
-
-```sh
+jira config set authType bearer
+# Supply JIRA_API_TOKEN through your approved secret-management mechanism.
+jira config test
 jira profile list
-jira profile use <name>
-jira profile add <name> [--server <url>] [--token <token>] [...same flags as config]
-jira profile remove <name>
 ```
 
-- `profile list` marks the active profile.
-- `profile use <name>` switches which profile is active by default.
-- `profile add <name>` accepts the exact same flags as `config` (`--server`, `--username`, `--token`, `--cloud-id`, `--auth-type`, `--tls-client-cert`, `--tls-client-key`, `--tls-ca-cert`, `--api-version`, `--cookie`) and is equivalent to `jira config --profile <name> ...`.
-- `profile remove <name>` refuses to remove the only remaining profile.
-- Profile resolution order: explicit `--profile <name>` flag > `JIRA_PROFILE` env var > stored active profile > `default`.
+Use `--profile <name>` or `JIRA_PROFILE` to select a profile. Supported
+authentication includes Basic, Bearer, cookie, and mTLS; see `jira profile add
+--help` and the project README for the supported settings.
+
+## Read issues and images
 
 ```sh
-jira profile add personal --server https://personal.atlassian.net --token <token>
-jira profile use personal
-jira --profile work issue list   # one-off override, doesn't change the active profile
+jira --json issue view TILLUI2-4695
+jira issue view TILLUI2-4695 --format markdown --output ./TILLUI2-4695.md
+jira --json issue attachment list TILLUI2-4695
+jira issue attachment download TILLUI2-4695 <attachment-id> --output ./example.png
 ```
 
-### `issue list`
+Issue JSON includes Jira's returned fields. Text/Markdown renders ADF media as
+`[media]`; list attachments to find their Jira attachment IDs, then download
+the file. Open the downloaded image with an image-capable local tool to inspect
+its contents. Downloading is read-only and does not change Jira. If an attachment
+URL is not on the configured Jira origin, the CLI refuses the download rather
+than sending credentials to another host.
 
-List issues with filtering.
+Useful read commands:
 
 ```sh
-jira issue list [--project <project>] [--assignee <assignee>] [--status <status>] [--type <type>] [--reporter <reporter>] [--priority <priority>] [--created <date>] [--updated <date>] [--limit <limit>] [--jql <query>] [--format table|json]
+jira --json issue list --project PROJ --limit 20
+jira --json issue transitions PROJ-123
+jira --json issue comment list PROJ-123
+jira --json issue remote-link list PROJ-123
+jira --json project view PROJ
+jira --json project components PROJ
+jira --json sprint boards
+jira --json sprint list --board 12 --state active
 ```
 
-Important options:
+## Create and update safely
 
-| Option | Description |
-|---|---|
-| `--project <project>` | Filter by project key |
-| `--assignee <assignee>` | Filter by assignee, including `currentUser` |
-| `--status <status>` | Filter by status |
-| `--type <type>` | Filter by issue type |
-| `--reporter <reporter>` | Filter by reporter |
-| `--priority <priority>` | Filter by priority |
-| `--created <date>` | Created since date like `-7d` or `2023-01-01` |
-| `--updated <date>` | Updated since date |
-| `--limit <limit>` | Result limit |
-| `--jql <query>` | Extra JQL expression |
-| `--format table|json` | Output format; JSON preserves full issue keys for automation |
+Before creating, check for duplicates and discover project/type-specific fields:
 
 ```sh
-jira issue list
-jira issue list --assignee=currentUser --status=Open
-jira issue list --project=TEST --type=Bug --limit=50
-jira issue list --jql 'assignee = currentUser' --format json
+jira --json issue create-fields --project PROJ --type Bug
+jira --json issue create --project PROJ --type Bug --summary 'Example' \
+  --fields-file ./fields.json --dry-run
 ```
 
-### `issue view <key>`
+Review and obtain explicit user approval for the exact fields before removing
+`--dry-run`. The preview makes metadata reads only. Writes are single-shot; after
+an ambiguous response, search Jira before retrying. Jira may require fields not
+marked required in create metadata.
 
-View issue details.
+Edits, comments, transitions, flags, and deletion are mutations. Perform one only
+when the user explicitly requested it and approved the exact issue and payload.
+Read the current state first. `--force` is an additional CLI safeguard, not user
+authorization. For an internal JSM note, use `issue comment add <key> --internal`
+and never fall back to a public comment if the internal request fails.
 
 ```sh
-jira issue view <key> [--format terminal|markdown|json] [--output <path>]
+jira issue edit PROJ-123 --summary 'Approved summary'
+jira issue transition PROJ-123 --to 'In Progress'
+jira issue flag PROJ-123
+jira issue comment add PROJ-123 --internal --file ./note.txt
+jira issue delete PROJ-123 --force
 ```
 
-| Option | Default | Description |
-|---|---|---|
-| `--format` | `terminal` | Output format; JSON includes all Jira issue fields |
-| `--output <path>` | none | Save the rendered output to a file |
+## Help and shell completion
 
 ```sh
-jira issue view PROJ-123
-jira issue view PROJ-123 --format markdown --output ./issue.md
-```
-
-### `issue create`
-
-Create a new issue after the exact draft and fields are approved. Discover project/type-specific required fields and values before writing:
-
-```sh
-jira issue create-fields --project PROJ --type Bug --format json
-```
-
-The JSON lists field IDs, names, required flags, schemas and available options (when Jira provides them). Use these IDs, not guessed names or example IDs. Prepare an additional-fields JSON file such as `{"customfield_10010":"Impact text","customfield_10011":{"id":"2"}}` using the **actual** discovered IDs and option. Textarea strings are sent as ADF on v3 and plain text on v2. Do not create when the field schema or required values are unknown.
-
-```sh
-jira issue create --project <project> --type <type> --summary <summary> [--description <text>] [--description-file <path>] [--assignee <assignee>] [--priority <priority>] [--fields-file <json-path>] [--dry-run] [--format text|json]
-```
-
-Important options:
-
-| Option | Description |
-|---|---|
-| `--project <project>` | Required project key |
-| `--type <type>` | Required issue type |
-| `--summary <summary>` | Required summary |
-| `--description <text>` | Inline description |
-| `--description-file <path>` | File-backed multiline description |
-| `--assignee <assignee>` | Initial assignee |
-| `--priority <priority>` | Initial priority |
-| `--fields-file <path>` | Extra create-screen fields, JSON object keyed by field ID; validates required fields before writing |
-| `--dry-run` | Validate and preview fields as JSON without creating an issue; review the exact draft before approval |
-| `--format json` | Single JSON result on stdout (`key`, `url`); JSON errors on stderr |
-
-```sh
-jira issue create --project PROJ --type Bug --summary "Login fails"
-jira issue create --project PROJ --type Story --summary "Add dashboard" --description-file ./dashboard.md
-jira issue create --project PROJ --type Bug --summary "Checkout blocked" --fields-file ./fields.json --format json
-jira issue view PROJ-123 --format json  # Verify all fields after creation
-```
-
-Creation is never retried automatically: if it fails or the response is ambiguous, search for an existing issue before considering another attempt. An agent must still obtain fresh approval of the complete draft; CLI support is not permission to write.
-
-### `issue edit <key>`
-
-Update an existing issue.
-
-```sh
-jira issue edit <key> [--summary <summary>] [--description <text>] [--description-file <path>] [--assignee <assignee>] [--priority <priority>]
-```
-
-```sh
-jira issue edit PROJ-123 --summary "Updated summary"
-jira issue edit PROJ-123 --description-file ./new-description.md
-```
-
-### Issue flagging / impediment
-
-The published npm CLI does not expose a supported command to flag or unflag an
-issue. Use the Rust candidate CLI's documented `issue flag` / `issue unflag`
-commands only when the active workflow permits that binary. Both operations
-are writes and require fresh explicit approval of the exact issue key and
-action; do not emulate them with `issue edit`, a guessed custom-field ID/value,
-or raw REST.
-
-### `issue transition <key>`
-
-Transition an issue using one of the workflow transitions currently available to it. Match an exact
-transition ID, destination status, or transition name. Text matching is case-insensitive; ambiguous
-matches must be disambiguated with the transition ID.
-
-```bash
-jira issue transition <key> --to <status>
-
-# Example
-jira issue transition PROJ-123 --to "In Progress"
-jira issue transition PROJ-123 --to "Start Progress"
-jira issue transition PROJ-123 --to 21
-```
-
-### `issue transitions <key>`
-
-List the workflow transitions currently available for an issue without changing its status. Use this
-to verify that a target transition is available before running `issue transition`.
-
-```sh
-jira issue transitions PROJ-123
-jira issue transitions PROJ-123 --format json
-```
-
-### `issue delete <key>`
-
-Delete an issue.
-
-```sh
-jira issue delete <key> --force
-```
-
-`--force` is required; otherwise the command should fail without deleting anything.
-
-### `issue comment add <key> [text]`
-
-Add a comment to an issue.
-
-```sh
-jira issue comment add <key> [text] [--file <path>] [--internal]
-```
-
-| Option | Description |
-|---|---|
-| `--file <path>` | Read the comment body from a file |
-| `--internal` | Mark the comment as internal/private |
-
-```sh
-jira issue comment add PROJ-123 "Investigation complete"
-jira issue comment add PROJ-123 --file ./notes.md --internal
-```
-
-### `issue comment list <key>`
-
-List comments on an issue.
-
-```sh
-jira issue comment list <key> [--format table|json]
-```
-
-```sh
-jira issue comment list PROJ-123
-jira issue comment list PROJ-123 --format json
-```
-
-### `issue comment edit <commentId> [text]`
-
-Edit an existing comment. This replaces the comment body; the npm CLI converts
-Markdown to rich Jira ADF for API v3 and plain text for API v2. Editing is a
-mutation: an agent may edit only when the user explicitly requests it and
-approves the exact issue key, comment ID, complete replacement body, and
-preserved visibility. Read the existing comment first; never change a private
-comment to public. Comment deletion is not authorized by an edit request.
-
-```sh
-jira issue comment edit <commentId> [text] --issue <key> [--file <path>]
-```
-
-```sh
-jira issue comment edit 12345 "Updated comment" --issue PROJ-123
-jira issue comment edit 12345 --issue PROJ-123 --file ./updated-notes.md
-```
-
-### `issue comment delete <commentId>`
-
-Delete a comment.
-
-```sh
-jira issue comment delete <commentId> --issue <key> --force
-```
-
-### `issue remote-link list <key>`
-
-List remote links for an issue.
-
-```sh
-jira issue remote-link list <key> [--format table|json] [--global-id <id>]
-```
-
-```sh
-jira issue remote-link list PROJ-123
-jira issue remote-link list PROJ-123 --global-id https://example.com/resource --format json
-```
-
-### `issue remote-link add <key>`
-
-Add a remote link.
-
-```sh
-jira issue remote-link add <key> --url <url> --title <title> [--global-id <id>] [--relationship <relationship>] [--summary <summary>] [--icon-url <url>] [--icon-title <title>]
-```
-
-Important options:
-
-| Option | Description |
-|---|---|
-| `--url <url>` | Required external resource URL |
-| `--title <title>` | Required link title |
-| `--global-id <id>` | Stable identifier for idempotent upserts |
-| `--relationship <relationship>` | Relationship text |
-| `--summary <summary>` | Optional summary |
-| `--icon-url <url>` | Optional icon URL |
-| `--icon-title <title>` | Optional icon alt text |
-
-```sh
-jira issue remote-link add PROJ-123 --url https://example.com/spec --title "Spec"
-```
-
-### `issue remote-link update <key> <linkId>`
-
-Update an existing remote link.
-
-```sh
-jira issue remote-link update <key> <linkId> [--url <url>] [--title <title>] [--relationship <relationship>] [--summary <summary>] [--icon-url <url>] [--icon-title <title>]
-```
-
-```sh
-jira issue remote-link update PROJ-123 10001 --title "Updated spec"
-```
-
-### `issue remote-link delete <key> <linkId>`
-
-Delete a remote link.
-
-```sh
-jira issue remote-link delete <key> <linkId> --force
-```
-
-### `project`
-
-List projects by default, or fetch a project directly with `--get`.
-
-```sh
-jira project [--get <key>]
-```
-
-```sh
-jira project
-jira project --get PROJ
-```
-
-### `project list`
-
-List projects with optional filtering.
-
-```sh
-jira project list [--type <type>] [--category <category>]
-```
-
-```sh
-jira project list
-jira project list --type software --category Platform
-```
-
-### `project view <key>`
-
-View project details.
-
-```sh
-jira project view <key>
-```
-
-### `project components <key>`
-
-List project components.
-
-```sh
-jira project components <key>
-```
-
-### `project versions <key>`
-
-List project versions.
-
-```sh
-jira project versions <key>
-```
-
-### `sprint`
-
-List sprints by default, optionally constrained to a board or active-only view.
-
-If multiple boards exist, the CLI may require `--board <id>` instead of guessing.
-
-```sh
-jira sprint [--board <id>] [--active]
-```
-
-```sh
-jira sprint --board 12
-jira sprint --board 12 --active
-```
-
-### `sprint list`
-
-List sprints.
-
-```sh
-jira sprint list [--board <id>] [--active] [--state <state>]
-```
-
-| Option | Description |
-|---|---|
-| `--board <id>` | Restrict to a board |
-| `--active` | Show only active sprints |
-| `--state <state>` | Filter by `active`, `future`, or `closed` |
-
-```sh
-jira sprint list --board 12
-jira sprint list --board 12 --state active
-```
-
-### `sprint active`
-
-List active sprints.
-
-```sh
-jira sprint active [--board <id>]
-```
-
-### `sprint boards`
-
-List available boards.
-
-```sh
-jira sprint boards
-```
-
-### `install-skill`
-
-Copy this skill into the current project.
-
-```sh
-jira install-skill [--dest <directory>] [--force]
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--dest <directory>` | `./.claude/skills/jira` | Target directory |
-| `--force` | false | Overwrite an existing installed skill |
-
-```sh
-jira install-skill
-jira install-skill --force
-jira install-skill --dest ./custom/skills/jira
-```
-
-## Workflow examples
-
-### Investigate open issues for the current user
-
-```sh
-jira issue list --assignee=currentUser --status=Open
-```
-
-### Export an issue as markdown for offline review
-
-```sh
-jira issue view PROJ-123 --format markdown --output ./issue.md
-```
-
-### Create an issue from a detailed spec file
-
-```sh
-jira issue create --project PROJ --type Story --summary "Add dashboard" --description-file ./dashboard.md
-```
-
-### Inspect boards before querying sprint state
-
-```sh
-jira sprint boards
-jira sprint list --board 12
+jira --help
+jira issue attachment --help
+jira completions zsh
 ```

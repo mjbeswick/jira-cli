@@ -1,164 +1,55 @@
-# JIRA CLI Project Guide
+# Jira CLI Project Guide
 
-## Project Overview
-Modern, extensible JIRA command-line interface built with Factory pattern and Commander.js. Provides full CRUD operations for issues, projects, and sprints with beautiful terminal UX.
+## Project overview
 
-## CLI Design Philosophy
-- **Non-Interactive**: All commands require explicit CLI arguments for full automation support
-- **Scriptable**: Designed for CI/CD pipelines and shell scripts
-- **No Prompts**: All input via flags or environment variables, no interactive prompts
-- **Description Files**: Use `--description-file` for multi-line content
-- **Explicit Validation**: Clear error messages with usage examples when options missing
+This repository builds a non-interactive Rust Jira CLI named `jira`. It uses
+Clap for command parsing, blocking reqwest for Jira REST calls, and serde_json
+for structured results. The npm/JavaScript implementation is retired; Cargo is
+the application build and test system.
 
-## Architecture
+## Source layout
 
-### Design Patterns
-- **Factory Pattern**: Command creation via `lib/factory.js`
-- **Dependency Injection**: Services injected into commands
-- **Commander.js**: CLI framework for command routing and parsing
+- `src/main.rs`: CLI commands, validation, output, and issue workflows.
+- `src/client.rs`: authenticated Jira REST client, API-version fallback,
+  attachment downloads, Markdown/ADF conversion, and client contract tests.
+- `src/config.rs`: secure profile storage, environment overrides, and migration
+  of existing Jira CLI config.
+- `src/skills.rs`: bundled skill metadata, local skill discovery, display, and
+  installation for Claude Code, OpenCode, and `.agents` hosts.
+- `plugins/jira/skills/jira/SKILL.md`: the single canonical agent skill,
+  embedded into the binary at compile time.
+- `.github/workflows/ci.yml`: formatting, Clippy, tests, and release build.
 
-### Project Structure
-```
-jira-cli/
-├── bin/
-│   ├── index.js              # CLI entry point
-│   ├── root.js               # Root command setup
-│   └── commands/             # Command implementations
-│       ├── config.js         # Configuration management
-│       ├── profile.js        # Multi-profile management (list/use/add/remove)
-│       ├── issue.js          # Issue CRUD operations
-│       ├── project.js        # Project operations
-│       └── sprint.js         # Sprint management
-├── lib/
-│   ├── jira-client.js        # JIRA API client (axios)
-│   ├── config.js             # Config management (hand-rolled JSON store, multi-profile)
-│   ├── config-options.js     # Shared flag-application logic (config --profile / profile add)
-│   ├── factory.js            # Command factory
-│   ├── iostreams.js          # I/O abstractions for testing
-│   ├── utils.js              # Utility functions
-│   └── analytics.js          # Usage analytics
-├── plugins/
-│   └── jira/                 # Claude Code plugin (marketplace-installable)
-│       ├── .claude-plugin/plugin.json
-│       └── skills/jira/SKILL.md  # single source of truth for the skill doc
-└── tests/                    # Jest unit tests
+## Agent skill discovery
+
+Keep the canonical bundled skill accurate to the actual Rust CLI flags and
+examples. Validate changes with:
+
+```sh
+jira --json skills list
+jira skills show jira
+jira skills install --target opencode
 ```
 
-### Claude Code Plugin
-- The `jira` skill is packaged as a Claude Code plugin under `plugins/jira/`, registered via the repo-root `.claude-plugin/marketplace.json`. Install with `/plugin marketplace add pchuri/jira-cli` + `/plugin install jira@pchuri-jira-cli`.
-- `bin/commands/install-skill.js` is the manual fallback (`jira install-skill`) — it copies `plugins/jira/skills/jira/SKILL.md` into a project's `.claude/skills/jira/`.
-- `plugins/jira/skills/jira/SKILL.md` is the single source of truth for the skill content; don't duplicate it elsewhere.
+The Claude Code plugin is an additional distribution path and must continue to
+point to the same skill source. Do not add a duplicate generated skill document.
 
-### Key Dependencies
-- **commander**: CLI framework
-- **axios**: HTTP client for JIRA API
-- **chalk**: Terminal colors
-- **ora**: Spinners and progress indicators
-- **cli-table3**: Formatted table output
+## Development and verification
 
-## Development Guidelines
-
-### Code Style
-- JavaScript (CommonJS), not TypeScript
-- Self-documenting code preferred over comments (per global CLAUDE.md)
-- Use descriptive variable/function names
-- Follow existing patterns in the codebase
-
-### Adding New Commands
-1. Create command file in `bin/commands/`
-2. Implement command logic following existing patterns
-3. Register command in `bin/root.js`
-4. Add tests in `tests/commands/`
-5. Update README.md with command documentation
-
-### API Client Usage
-- Use `lib/jira-client.js` for all JIRA API calls
-- Handle authentication via config (API token + username)
-- Implement proper error handling with user-friendly messages
-- Use iostreams for output (supports testing and mocking)
-
-### Configuration
-- Config stored as hand-rolled JSON at `~/.jira-cli/config.json` (`{ activeProfile, profiles: { <name>: {...} } }`), supporting multiple named profiles
-- A pre-multi-profile single config (previously managed by the `conf` package) is transparently migrated into the `"default"` profile on first read; the old file is left untouched
-- Support environment variables and CLI flags (no interactive setup)
-- Environment variables: `JIRA_HOST`, `JIRA_API_TOKEN`, `JIRA_USERNAME`, `JIRA_PROFILE`
-- Legacy support: `JIRA_DOMAIN`, `JIRA_USERNAME`, `JIRA_API_TOKEN`
-- CLI flags: `jira config --server <url> --username <email> --token <token>`
-- Multiple profiles: `jira config --profile <name> --server <url> --token <token>`, `jira profile list|use <name>|add <name>|remove <name>`, global `--profile <name>` flag
-
-### Issue Management Patterns
-- **Create**: Require `--project`, `--type`, `--summary` flags
-- **Update**: Require at least one field flag
-- **Delete**: Require `--force` flag (no confirmation prompt)
-- **Description Files**: Support `--description-file <path>` for multi-line content
-
-## Testing
-
-### Running Tests
-```bash
-npm test                # Run all tests
-npm run test:watch      # Watch mode
-npm run test:coverage   # Coverage report
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked
 ```
 
-### Test Strategy
-- Unit tests for all commands and lib functions
-- Mock JIRA API calls using Jest mocks
-- Use iostreams abstraction for CLI I/O testing
-- Maintain high test coverage
+Tests use local HTTP fixtures. Do not expose credentials or invoke live Jira
+through an unapproved route. Jira writes must remain single-shot; never add
+automatic retries to a write operation.
 
-### Writing Tests
-- Place tests in `tests/` directory mirroring source structure
-- Use descriptive test names
-- Mock external dependencies (axios)
-- Test both success and error cases
+## Releases
 
-## Release Process
-
-### Conventional Commits (Required)
-All commits must follow [Conventional Commits](https://www.conventionalcommits.org/) format:
-- `feat:` - New features (minor version bump)
-- `fix:` - Bug fixes (patch version bump)
-- `docs:` - Documentation only
-- `refactor:` - Code refactoring
-- `test:` - Test additions/changes
-- `chore:` - Build/tooling changes
-
-### Automated Release
-- Merge to `main` triggers semantic-release
-- Version bumped automatically based on commit types
-- Changelog generated from commit messages
-- NPM publish automated via GitHub Actions
-
-### Manual Release Fallback
-See AGENTS.md for emergency release procedures if automation fails.
-
-## Common Tasks
-
-### Adding JIRA API Integration
-1. Add method to `lib/jira-client.js`
-2. Use axios for HTTP requests
-3. Handle authentication headers automatically
-4. Return meaningful error messages
-5. Add unit tests with mocked responses
-
-### Improving UX
-- Use `chalk` for colored output
-- Use `ora` for loading indicators
-- Use `cli-table3` for tabular data
-- Provide clear error messages with actionable guidance
-- Show usage examples in error messages when required options missing
-
-### Debugging
-```bash
-DEBUG=jira-cli* jira issue --list
-JIRA_CLI_ANALYTICS=false jira config --show
-```
-
-## Important Notes
-
-- JIRA API uses Bearer token authentication (API tokens, not passwords)
-- Support both JIRA Cloud and JIRA Data Center APIs
-- Handle rate limiting and network errors gracefully
-- Respect user privacy (analytics opt-out via `JIRA_CLI_ANALYTICS=false`)
-- Always test with real JIRA instance before releasing
+Use Conventional Commits. Rust releases are created by pushing a `v*` tag that
+matches `Cargo.toml`'s package version. CI runs format, lint, and test checks,
+builds the Linux x86_64 binary, and attaches it to a GitHub Release. See
+`AGENTS.md` for the manual release procedure.

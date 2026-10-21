@@ -1,6 +1,6 @@
 {
   "name": "jira",
-  "description": "Use jira-cli to configure Jira access and manage issues, comments, remote links, projects, and sprints from the terminal.",
+  "description": "Discover and use the Rust jira CLI to inspect Jira issues, projects, sprints, comments, remote links, and attachments.",
   "author": {
     "name": "pchuri"
   },

@@ -6,7 +6,10 @@ use serde_json::{json, Value};
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::fmt;
+use std::io::Write;
+use std::path::Path;
 use std::time::Duration;
+use url::Url;
 
 pub struct Jira {
     http: Client,
@@ -202,6 +205,103 @@ impl Jira {
         body: Option<&Value>,
     ) -> Result<Value> {
         self.send(method, path, body, self.version.get(), false)
+    }
+
+    /// List attachment metadata (id, filename, mimeType, size, author, created,
+    /// and an absolute `content` download URL) for an issue, including
+    /// attachments referenced inline from a rich-text description or comment.
+    /// Rendering those fields as Markdown cannot embed binary image data, so
+    /// inline media nodes render as the literal text "[media]"; this is how an
+    /// agent discovers and retrieves what those placeholders point to.
+    pub fn get_attachments(&self, issue_key: &str) -> Result<Value> {
+        let response = self.get(&format!("/issue/{}?fields=attachment", encoded(issue_key)))?;
+        Ok(response["fields"]["attachment"]
+            .as_array()
+            .cloned()
+            .map(Value::Array)
+            .unwrap_or_else(|| Value::Array(Vec::new())))
+    }
+
+    /// Download one attachment's bytes to `dest_path` using its own absolute
+    /// `content` URL. The initial URL must match the configured Jira origin.
+    /// Jira may respond with a 303 to a signed media URL; redirects are followed
+    /// without Jira credentials or cookies, and HTTPS downgrades are refused.
+    pub fn download_attachment(&self, content_url: &str, dest_path: &Path) -> Result<()> {
+        let mut target = Url::parse(content_url).context("Attachment content URL is not valid")?;
+        let allowed = Url::parse(&self.root()).context("Configured Jira server URL is invalid")?;
+        if target.scheme() != "https" && target.scheme() != "http" {
+            bail!("Refusing to download from a non-HTTP(S) attachment URL");
+        }
+        if target.host_str() != allowed.host_str()
+            || target.port_or_known_default() != allowed.port_or_known_default()
+        {
+            bail!(
+                "Refusing to download from attachment URL host {:?}; expected {:?}",
+                target.host_str(),
+                allowed.host_str()
+            );
+        }
+        let mut send_jira_credentials = true;
+        let mut redirects_followed = 0;
+        let response = loop {
+            let request = self.http.get(target.clone());
+            let response = if send_jira_credentials {
+                self.auth(request).send()
+            } else {
+                request.send()
+            }
+            .context("Attachment download request failed")?;
+            let status = response.status();
+            if status.is_redirection() {
+                if redirects_followed >= 5 {
+                    bail!("Attachment download exceeded the redirect limit");
+                }
+                if !matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
+                    bail!(
+                        "Jira returned unsupported HTTP {status} while downloading the attachment"
+                    );
+                }
+                let Some(location) = response.headers().get(reqwest::header::LOCATION) else {
+                    bail!("Jira redirected the attachment without a Location header");
+                };
+                let location = location
+                    .to_str()
+                    .context("Jira returned an invalid attachment redirect")?;
+                let next = target
+                    .join(location)
+                    .context("Jira returned an invalid attachment redirect URL")?;
+                if next.scheme() != "https" && next.scheme() != "http" {
+                    bail!("Refusing to follow a non-HTTP(S) attachment redirect");
+                }
+                if target.scheme() == "https" && next.scheme() != "https" {
+                    bail!("Refusing to follow an attachment redirect that downgrades HTTPS");
+                }
+                if !next.username().is_empty() || next.password().is_some() {
+                    bail!("Refusing to follow an attachment redirect containing URL credentials");
+                }
+                if !send_jira_credentials && next == target {
+                    bail!("Jira returned a self-referencing attachment redirect");
+                }
+                // Never send Jira credentials/cookies to a redirect target,
+                // including same-origin redirects. CDN URLs are commonly signed.
+                send_jira_credentials = false;
+                redirects_followed += 1;
+                target = next;
+                continue;
+            }
+            if !status.is_success() {
+                bail!("Jira returned HTTP {status} while downloading the attachment");
+            }
+            break response;
+        };
+        let bytes = response
+            .bytes()
+            .context("Cannot read attachment response body")?;
+        let mut file = std::fs::File::create(dest_path)
+            .with_context(|| format!("Cannot create {}", dest_path.display()))?;
+        file.write_all(&bytes)
+            .with_context(|| format!("Cannot write {}", dest_path.display()))?;
+        Ok(())
     }
 
     /// JSM Cloud's request-comment API, which explicitly controls customer visibility.
@@ -748,6 +848,7 @@ fn heading_level(level: HeadingLevel) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
@@ -757,6 +858,7 @@ mod tests {
         status: &'static str,
         content_type: &'static str,
         body: String,
+        location: Option<String>,
     }
 
     struct Captured {
@@ -781,7 +883,7 @@ mod tests {
             let mut captured = Vec::new();
             for reply in replies {
                 let (stream, _) = listener.accept().unwrap();
-                let request = read_request(stream, reply.status, reply.content_type, &reply.body);
+                let request = read_request(stream, &reply);
                 assert_eq!(request.request, reply.request);
                 captured.push(request);
             }
@@ -803,7 +905,7 @@ mod tests {
         (Jira::new(config).unwrap(), handle)
     }
 
-    fn read_request(stream: TcpStream, status: &str, content_type: &str, body: &str) -> Captured {
+    fn read_request(stream: TcpStream, reply: &Reply) -> Captured {
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -830,9 +932,17 @@ mod tests {
         }
         let mut payload = vec![0; length];
         reader.read_exact(&mut payload).unwrap();
+        let location = reply
+            .location
+            .as_ref()
+            .map(|value| format!("Location: {value}\r\n"))
+            .unwrap_or_default();
         let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
+            "HTTP/1.1 {}\r\nContent-Type: {}\r\n{location}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            reply.status,
+            reply.content_type,
+            reply.body.len(),
+            reply.body
         );
         reader.get_mut().write_all(response.as_bytes()).unwrap();
         Captured {
@@ -850,6 +960,7 @@ mod tests {
             status,
             content_type: "application/json",
             body: body.to_string(),
+            location: None,
         }
     }
 
@@ -887,6 +998,7 @@ mod tests {
                     status,
                     content_type,
                     body: body.to_string(),
+                    location: None,
                 },
                 reply("GET /rest/api/2/field HTTP/1.1", "200 OK", "[]"),
             ]);
@@ -899,7 +1011,7 @@ mod tests {
     #[test]
     fn cloud_search_uses_tokens_and_caps_results() {
         let (mut client, server) = fixture(vec![
-            Reply { request: "GET /rest/api/3/search/jql?jql=project%3DABC&maxResults=100 HTTP/1.1", status: "200 OK", content_type: "application/json", body: format!("{{\"issues\":{},\"nextPageToken\":\"a/b\"}}", json!(vec![json!({"id": 1}); 100])) },
+            Reply { request: "GET /rest/api/3/search/jql?jql=project%3DABC&maxResults=100 HTTP/1.1", status: "200 OK", content_type: "application/json", body: format!("{{\"issues\":{},\"nextPageToken\":\"a/b\"}}", json!(vec![json!({"id": 1}); 100])), location: None },
             reply("GET /rest/api/3/search/jql?jql=project%3DABC&maxResults=1&nextPageToken=a%2Fb HTTP/1.1", "200 OK", "{\"issues\":[{\"id\":2}],\"isLast\":true}"),
         ]);
         let result = client.search_issues("project=ABC", 101).unwrap();
@@ -913,7 +1025,7 @@ mod tests {
     fn search_falls_back_to_v2_and_uses_start_at() {
         let (mut client, server) = fixture(vec![
             reply("GET /rest/api/3/search/jql?jql=text%20~%20%22a%22&maxResults=100 HTTP/1.1", "404 Not Found", "{}"),
-            Reply { request: "GET /rest/api/2/search?jql=text%20~%20%22a%22&startAt=0&maxResults=100 HTTP/1.1", status: "200 OK", content_type: "application/json", body: format!("{{\"issues\":{},\"total\":101}}", json!(vec![json!({"id": 1}); 100])) },
+            Reply { request: "GET /rest/api/2/search?jql=text%20~%20%22a%22&startAt=0&maxResults=100 HTTP/1.1", status: "200 OK", content_type: "application/json", body: format!("{{\"issues\":{},\"total\":101}}", json!(vec![json!({"id": 1}); 100])), location: None },
             reply("GET /rest/api/2/search?jql=text%20~%20%22a%22&startAt=100&maxResults=1 HTTP/1.1", "200 OK", "{\"issues\":[{\"id\":2}],\"total\":101}"),
         ]);
         let result = client.search_issues("text ~ \"a\"", 101).unwrap();
@@ -933,6 +1045,7 @@ mod tests {
                     "{{\"issues\":{},\"nextPageToken\":\"more\"}}",
                     json!(vec![json!({"id": 3}); 100])
                 ),
+                location: None,
             },
             reply(
                 "GET /rest/api/3/search/jql?jql=ABC&maxResults=1&nextPageToken=more HTTP/1.1",
@@ -952,6 +1065,7 @@ mod tests {
                     "{{\"issues\":{},\"total\":101}}",
                     json!(vec![json!({"id": 1}); 100])
                 ),
+                location: None,
             },
             reply(
                 "GET /rest/api/2/search?jql=ABC&startAt=100&maxResults=1 HTTP/1.1",
@@ -1062,6 +1176,7 @@ mod tests {
                 status,
                 content_type,
                 body: body.into(),
+                location: None,
             }]);
             let error = client.add_internal_comment("ABC-1", "private").unwrap_err();
             assert!(!error.to_string().contains("secret"));
@@ -1083,12 +1198,14 @@ mod tests {
                 status: "204 No Content",
                 content_type: "",
                 body: "".into(),
+                location: None,
             },
             Reply {
                 request: "GET /rest/api/3/field HTTP/1.1",
                 status: "302 Found",
                 content_type: "text/html",
                 body: "login".into(),
+                location: None,
             },
         ]);
         assert_eq!(
@@ -1150,5 +1267,116 @@ mod tests {
             markdown_to_plain_text("# **Title**\n\nSee [the docs](https://example.com)."),
             "Title\n\nSee the docs (https://example.com)."
         );
+    }
+
+    #[test]
+    fn get_attachments_reads_the_attachment_field() {
+        let (client, server) = fixture(vec![reply(
+            "GET /rest/api/3/issue/ABC-1?fields=attachment HTTP/1.1",
+            "200 OK",
+            r#"{"fields":{"attachment":[{"id":"10050","filename":"screenshot.png","mimeType":"image/png","size":1024,"content":"http://example.com/content/10050"}]}}"#,
+        )]);
+        let attachments = client.get_attachments("ABC-1").unwrap();
+        assert_eq!(attachments[0]["filename"], "screenshot.png");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn get_attachments_returns_empty_array_when_issue_has_none() {
+        let (client, server) = fixture(vec![reply(
+            "GET /rest/api/3/issue/ABC-1?fields=attachment HTTP/1.1",
+            "200 OK",
+            r#"{"fields":{}}"#,
+        )]);
+        assert_eq!(client.get_attachments("ABC-1").unwrap(), json!([]));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn download_attachment_writes_bytes_from_its_content_url() {
+        let (client, server) = fixture(vec![Reply {
+            request: "GET /attachment/content/10050 HTTP/1.1",
+            status: "200 OK",
+            content_type: "image/png",
+            body: "fake-image-bytes".into(),
+            location: None,
+        }]);
+        let content_url = format!("{}/attachment/content/10050", client.root());
+        let directory = tempfile::tempdir().unwrap();
+        let dest = directory.path().join("screenshot.png");
+
+        client.download_attachment(&content_url, &dest).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "fake-image-bytes");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn download_attachment_follows_303_without_forwarding_credentials() {
+        let (client, server) = fixture_with_cookie(
+            vec![
+                Reply {
+                    request: "GET /attachment/content/10050 HTTP/1.1",
+                    status: "303 See Other",
+                    content_type: "text/plain",
+                    body: String::new(),
+                    location: Some("/signed/10050?token=temporary".into()),
+                },
+                Reply {
+                    request: "GET /signed/10050?token=temporary HTTP/1.1",
+                    status: "200 OK",
+                    content_type: "image/png",
+                    body: "fake-image-bytes".into(),
+                    location: None,
+                },
+            ],
+            "session=test-cookie",
+        );
+        let content_url = format!("{}/attachment/content/10050", client.root());
+        let directory = tempfile::tempdir().unwrap();
+        let dest = directory.path().join("screenshot.png");
+
+        client.download_attachment(&content_url, &dest).unwrap();
+
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "fake-image-bytes");
+        let requests = server.join().unwrap();
+        assert!(requests[0].basic_auth);
+        assert!(requests[0].cookie);
+        assert!(
+            !requests[1].basic_auth,
+            "redirect must not receive Basic credentials"
+        );
+        assert!(
+            !requests[1].cookie,
+            "redirect must not receive Jira cookies"
+        );
+    }
+
+    #[test]
+    fn download_attachment_refuses_a_content_url_on_a_different_host() {
+        let (client, _server) = fixture(vec![]);
+        let directory = tempfile::tempdir().unwrap();
+        let dest = directory.path().join("screenshot.png");
+
+        let error = client
+            .download_attachment("https://evil.example.com/steal", &dest)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Refusing to download"));
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn download_attachment_refuses_a_non_http_scheme() {
+        let (client, _server) = fixture(vec![]);
+        let directory = tempfile::tempdir().unwrap();
+        let dest = directory.path().join("screenshot.png");
+
+        let error = client
+            .download_attachment("file:///etc/passwd", &dest)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("non-HTTP"));
+        assert!(!dest.exists());
     }
 }

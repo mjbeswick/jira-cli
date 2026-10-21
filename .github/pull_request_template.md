@@ -29,7 +29,7 @@
 - [ ] All existing tests pass
 - [ ] New tests added for new functionality
 - [ ] Manual testing completed
-- [ ] Code coverage maintained/improved
+- [ ] `cargo fmt`, `cargo clippy`, and `cargo test` pass
 
 ## 📊 Test Results
 
@@ -38,14 +38,6 @@
 ```bash
 # Test results go here
 ```
-
-## 📈 Coverage Report
-
-<!-- If applicable, include coverage information -->
-
-| File | Coverage | Status |
-|------|----------|--------|
-| | | |
 
 ## 🚀 Deployment Notes
 
@@ -58,9 +50,9 @@
 
 ## 📝 Checklist
 
-- [ ] My code follows the project's style guidelines
+- [ ] My code follows the project's Rust style guidelines
 - [ ] I have performed a self-review of my code
-- [ ] I have commented my code, particularly in hard-to-understand areas
+- [ ] I have documented behavior where appropriate
 - [ ] I have made corresponding changes to the documentation
 - [ ] My changes generate no new warnings
 - [ ] I have added tests that prove my fix is effective or that my feature works

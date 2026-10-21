@@ -1,136 +1,45 @@
-# Contributing to JIRA CLI
+# Contributing to Jira CLI
 
-We love your input! We want to make contributing to JIRA CLI as easy and transparent as possible, whether it's:
+Contributions are welcome through GitHub issues and pull requests. The project is
+a Rust CLI; do not add an application dependency on JavaScript/Node tooling.
 
-- Reporting a bug
-- Discussing the current state of the code
-- Submitting a fix
-- Proposing new features
-- Becoming a maintainer
+## Development
 
-## Development Process
+Install a stable Rust toolchain with `rustfmt` and `clippy`. Before submitting a
+pull request, run:
 
-We use GitHub to host code, to track issues and feature requests, as well as accept pull requests.
-
-## Pull Requests
-
-Pull requests are the best way to propose changes to the codebase. We actively welcome your pull requests:
-
-1. Fork the repo and create your branch from `main`.
-2. If you've added code that should be tested, add tests.
-3. If you've changed APIs, update the documentation.
-4. Ensure the test suite passes.
-5. Make sure your code lints.
-6. Issue that pull request!
-
-## Any Contributions You Make Will Be Under the ISC Software License
-
-In short, when you submit code changes, your submissions are understood to be under the same [ISC License](https://choosealicense.com/licenses/isc/) that covers the project. Feel free to contact the maintainers if that's a concern.
-
-## Report Bugs Using GitHub Issues
-
-We use GitHub issues to track public bugs. Report a bug by [opening a new issue](https://github.com/pchuri/jira-cli/issues).
-
-**Great Bug Reports** tend to have:
-
-- A quick summary and/or background
-- Steps to reproduce
-  - Be specific!
-  - Give sample code if you can
-- What you expected would happen
-- What actually happens
-- Notes (possibly including why you think this might be happening, or stuff you tried that didn't work)
-
-## Feature Requests
-
-We use GitHub issues to track feature requests as well. You can [create a feature request](https://github.com/pchuri/jira-cli/issues/new) by opening a new issue and using the feature request template.
-
-## Coding Style
-
-* We use ESLint for JavaScript style consistency
-* 2 spaces for indentation
-* Single quotes for strings
-* Follow the existing code style in the project
-
-## Commit Message Guidelines
-
-We use [Conventional Commits](https://www.conventionalcommits.org/) specification for our commit messages. This leads to **automatic versioning and changelog generation**.
-
-### Commit Message Format
-
-```
-<type>[optional scope]: <description>
-
-[optional body]
-
-[optional footer(s)]
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked
 ```
 
-### Types
+Tests use local Jira HTTP fixtures; live Jira credentials should not be required.
+Never add secrets to fixtures, logs, documentation, or pull requests.
 
-- **feat**: A new feature (bumps minor version)
-- **fix**: A bug fix (bumps patch version)
-- **docs**: Documentation only changes
-- **style**: Changes that do not affect the meaning of the code
-- **refactor**: A code change that neither fixes a bug nor adds a feature
-- **perf**: A code change that improves performance
-- **test**: Adding missing tests or correcting existing tests
-- **chore**: Changes to the build process or auxiliary tools
-- **ci**: Changes to CI configuration files and scripts
+## Code and CLI changes
 
-### Breaking Changes
+- Keep command definitions in `src/main.rs` and HTTP behavior in `src/client.rs`.
+- Preserve safe, single-shot write semantics and Jira-origin checks for
+  attachment downloads.
+- Add regression tests for new behavior, including failure and permission cases.
+- Keep `plugins/jira/skills/jira/SKILL.md` accurate to the command surface; it
+  is embedded into the binary and is the canonical skill content.
+- Maintain `jira skills list`, `jira skills show`, and `jira skills install`
+  behavior so agents can discover the bundled skill and install it in supported
+  agent directories.
+- Update the README and `docs/API.md` when the CLI or skill interface changes.
 
-For breaking changes, add `BREAKING CHANGE:` in the footer or add `!` after the type:
+## Commit messages
 
-```
-feat!: remove deprecated command options
+Use Conventional Commits (for example, `feat(attachments): download issue
+images`, `fix(config): preserve active profile`, or `docs: clarify skill setup`).
+Release versions are taken from `Cargo.toml` and published through version tags;
+see `AGENTS.md`.
 
-BREAKING CHANGE: The --legacy flag has been removed
-```
+## Pull requests
 
-### Examples
-
-```
-feat(auth): add OAuth2 authentication support
-fix(cli): resolve issue parsing empty project names
-docs: update installation instructions
-test(client): add tests for error handling
-chore(deps): update axios to v1.6.0
-```
-
-## Development Setup
-
-1. Fork and clone the repository
-2. Install dependencies: `npm install`
-3. Run tests: `npm test`
-4. Run linting: `npm run lint`
-
-## Testing
-
-* Write tests for new features
-* Ensure all tests pass before submitting a PR
-* We use Jest for testing
-
-## Documentation
-
-* Update README.md if you change functionality
-* Add JSDoc comments for new functions
-* Update API documentation in docs/ if needed
-
-## Code Review Process
-
-The core team looks at Pull Requests on a regular basis. We may suggest changes, improvements or alternatives.
-
-## Community
-
-* Be respectful and considerate
-* Follow our [Code of Conduct](CODE_OF_CONDUCT.md)
-* Help others in discussions and issues
-
-## Getting Help
-
-* Check existing issues and documentation first
-* Open a [discussion](https://github.com/pchuri/jira-cli/discussions) for questions
-* Reach out to maintainers if needed
-
-Thank you for contributing! 🎉
+Describe the user-visible behavior, risks, and verification performed. Report
+checks that were not run rather than implying they passed. Include related issue
+references when applicable.

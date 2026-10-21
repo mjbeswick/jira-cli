@@ -50,11 +50,11 @@ body:
       required: true
 
   - type: input
-    id: node-version
+    id: rust-version
     attributes:
-      label: Node.js version
-      description: What version of Node.js are you running?
-      placeholder: e.g. 18.0.0
+      label: Jira CLI / Rust version
+      description: Include `jira --version` and, if building from source, `rustc --version`.
+      placeholder: e.g. jira 0.1.0; rustc 1.85.0
     validations:
       required: true
 

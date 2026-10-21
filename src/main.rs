@@ -1,5 +1,6 @@
 mod client;
 mod config;
+mod skills;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
@@ -7,11 +8,7 @@ use clap_complete::{generate, Shell};
 use client::{encoded, markdown_to_adf, markdown_to_plain_text, Jira};
 use reqwest::Method;
 use serde_json::{json, Map, Value};
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -73,14 +70,14 @@ enum Command {
         #[command(subcommand)]
         command: SprintCommand,
     },
-    /// Discover agent skills packaged with this Rust CLI
+    /// Discover, show, and install agent skills
     Skills {
         #[command(subcommand)]
         command: SkillsCommand,
     },
     /// Copy the packaged Jira skill into the current project
     InstallSkill {
-        #[arg(long, default_value = "./.claude/skills/jira-rust-candidate")]
+        #[arg(long, default_value = "./.claude/skills/jira")]
         dest: PathBuf,
         #[arg(long)]
         force: bool,
@@ -208,6 +205,29 @@ enum IssueCommand {
     RemoteLink {
         #[command(subcommand)]
         command: RemoteLinkCommand,
+    },
+    /// List and download issue attachments, including inline images referenced
+    /// from a description or comment (rendered as "[media]" in Markdown output)
+    Attachment {
+        #[command(subcommand)]
+        command: AttachmentCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AttachmentCommand {
+    /// List attachment metadata for an issue
+    List { key: String },
+    /// Download one attachment to a local file by its ID or exact filename
+    Download {
+        key: String,
+        #[arg(help = "Attachment ID (from `issue attachment list`) or exact filename")]
+        id_or_filename: String,
+        #[arg(
+            long,
+            help = "Destination path (default: the attachment's original filename in the current directory)"
+        )]
+        output: Option<PathBuf>,
     },
 }
 
@@ -385,8 +405,19 @@ enum SprintCommand {
 
 #[derive(Subcommand)]
 enum SkillsCommand {
-    /// List skills packaged with this CLI; does not report agent-specific availability
+    /// List bundled and discovered agent skills
     List,
+    /// Print a skill's complete instructions
+    Show { name: String },
+    /// Install this CLI's bundled skill into common agent skill directories
+    Install {
+        /// Install into this target only (claude, opencode, agents); repeatable. Defaults to all.
+        #[arg(long = "target", value_enum)]
+        targets: Vec<skills::SkillTarget>,
+        /// Replace an existing skill file
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn emit(value: &Value, machine: bool) -> Result<()> {
@@ -440,9 +471,11 @@ fn run(cli: &Cli) -> Result<()> {
             generate(*shell, &mut command, "jira", &mut std::io::stdout());
             return Ok(());
         }
-        Command::Skills {
-            command: SkillsCommand::List,
-        } => return emit(&packaged_skills(), cli.json),
+        Command::Skills { command } => return run_skills(command, cli.json),
+        Command::InstallSkill { dest, force } => {
+            let path = skills::install_to_directory(dest, *force)?;
+            return emit(&json!({"installed": path}), cli.json);
+        }
         _ => {}
     }
 
@@ -597,24 +630,92 @@ fn run(cli: &Cli) -> Result<()> {
             };
             emit(&result, cli.json)
         }
-        Command::InstallSkill { dest, force } => {
-            let path = install_skill(dest, *force)?;
-            emit(&json!({"installed": path}), cli.json)
+        Command::InstallSkill { .. } | Command::Skills { .. } => {
+            unreachable!("handled before loading configuration")
         }
-        Command::Skills { .. } => unreachable!("handled before loading configuration"),
         Command::Completions { .. } => unreachable!("handled before loading configuration"),
     }
 }
 
-fn packaged_skills() -> Value {
-    json!({
-        "skills": [{
-            "name": "jira-rust-candidate",
-            "description": "Read Jira with the Rust CLI and prepare exact issue drafts for user-approved mutations.",
-            "distribution": "packaged",
-            "install_command": "jira install-skill"
-        }]
-    })
+fn run_skills(command: &SkillsCommand, machine: bool) -> Result<()> {
+    match command {
+        SkillsCommand::List => {
+            let discovered = skills::discover()?;
+            if machine {
+                emit(&json!({"skills": discovered}), true)
+            } else if discovered.is_empty() {
+                println!(
+                    "No skills found. Run `jira skills install` to install the bundled Jira skill."
+                );
+                Ok(())
+            } else {
+                for skill in discovered {
+                    let origin = if skill.bundled {
+                        "(bundled)".to_owned()
+                    } else {
+                        skill
+                            .path
+                            .as_deref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_default()
+                    };
+                    println!("{}\t{}\t{}", skill.name, origin, skill.description);
+                }
+                Ok(())
+            }
+        }
+        SkillsCommand::Show { name } => {
+            let discovered = skills::discover()?;
+            let matches: Vec<_> = discovered
+                .iter()
+                .filter(|skill| skill.name == *name)
+                .collect();
+            let skill = match matches.as_slice() {
+                [skill] => *skill,
+                [_, ..] if matches.iter().any(|skill| skill.bundled) => {
+                    matches.iter().find(|skill| skill.bundled).copied().unwrap()
+                }
+                [] => bail!("Skill `{name}` not found; run `jira skills list`"),
+                _ => bail!("Skill name `{name}` is ambiguous; inspect `jira skills list`"),
+            };
+            let instructions = if skill.bundled {
+                skills::bundled_text().to_owned()
+            } else {
+                fs::read_to_string(
+                    skill
+                        .path
+                        .as_ref()
+                        .context("Discovered skill has no path")?,
+                )?
+            };
+            if machine {
+                emit(
+                    &json!({
+                        "name": skill.name,
+                        "description": skill.description,
+                        "path": skill.path,
+                        "bundled": skill.bundled,
+                        "instructions": instructions
+                    }),
+                    true,
+                )
+            } else {
+                print!("{instructions}");
+                Ok(())
+            }
+        }
+        SkillsCommand::Install { targets, force } => {
+            let results = skills::install_bundled(targets, *force)?;
+            if machine {
+                emit(&json!({"installed": results}), true)
+            } else {
+                for path in results {
+                    println!("installed\t{}", path.display());
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 fn configured(store: &config::Store, selected: &str) -> Result<Jira> {
@@ -814,74 +915,6 @@ fn sprints(jira: &Jira, board: Option<&str>, state: Option<&str>) -> Result<Valu
     jira.get_agile(&path)
 }
 
-fn install_skill(dest: &PathBuf, force: bool) -> Result<PathBuf> {
-    // Embed the packaged source so installation does not depend on the caller's
-    // current directory or the location of the executable.
-    const SKILL: &str =
-        include_str!("../plugins/jira-rust-candidate/skills/jira-rust-candidate/SKILL.md");
-    let dir = if dest == &PathBuf::from("~") || dest.starts_with("~/") {
-        let home = std::env::var_os("HOME").context("HOME is not set")?;
-        PathBuf::from(home).join(dest.strip_prefix("~")?)
-    } else {
-        dest.clone()
-    };
-    let path = dir.join("SKILL.md");
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) if !force || !metadata.file_type().is_file() => {
-            bail!(
-                "{} already exists; --force is required to replace a regular file",
-                path.display()
-            );
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(error).with_context(|| format!("Cannot inspect {}", path.display()))
-        }
-    }
-    fs::create_dir_all(&dir).with_context(|| format!("Cannot create {}", dir.display()))?;
-    if force {
-        let (mut temporary, temp_path) = tempfile_path(&dir)?;
-        if let Err(error) = temporary.write_all(SKILL.as_bytes()) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(error.into());
-        }
-        drop(temporary);
-        if let Err(error) = fs::rename(&temp_path, &path) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(error).with_context(|| format!("Cannot replace {}", path.display()));
-        }
-    } else {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .with_context(|| format!("{} already exists or cannot be created", path.display()))?;
-        if let Err(error) = file.write_all(SKILL.as_bytes()) {
-            drop(file);
-            let _ = fs::remove_file(&path);
-            return Err(error.into());
-        }
-    }
-    Ok(path)
-}
-
-fn tempfile_path(dir: &Path) -> Result<(fs::File, PathBuf)> {
-    for index in 0..1000 {
-        let path = dir.join(format!(".SKILL.md.{}.{}.tmp", std::process::id(), index));
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(file) => return Ok((file, path)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    bail!("Cannot allocate a temporary skill file")
-}
-
 fn issue(command: &IssueCommand, mut jira: Jira, machine: bool) -> Result<()> {
     let result = match command {
         IssueCommand::List(args) => jira.search_issues(&list_jql(args)?, args.limit)?,
@@ -1026,8 +1059,73 @@ fn issue(command: &IssueCommand, mut jira: Jira, machine: bool) -> Result<()> {
         IssueCommand::Unflag { key } => set_issue_flag(&jira, key, false)?,
         IssueCommand::Comment { command } => comment(&jira, command)?,
         IssueCommand::RemoteLink { command } => remote_link(&jira, command)?,
+        IssueCommand::Attachment { command } => match command {
+            AttachmentCommand::List { key } => jira.get_attachments(key)?,
+            AttachmentCommand::Download {
+                key,
+                id_or_filename,
+                output,
+            } => {
+                let attachments = jira.get_attachments(key)?;
+                let items = attachments
+                    .as_array()
+                    .context("Invalid attachment list response")?;
+                let attachment = find_attachment(items, id_or_filename)?;
+                let filename = attachment["filename"]
+                    .as_str()
+                    .with_context(|| format!("Attachment {id_or_filename} has no filename"))?;
+                let content_url = attachment["content"].as_str().with_context(|| {
+                    format!("Attachment {id_or_filename} is missing a content URL")
+                })?;
+                let dest_path = output.clone().unwrap_or_else(|| PathBuf::from(filename));
+                jira.download_attachment(content_url, &dest_path)?;
+                json!({
+                    "id": attachment["id"],
+                    "filename": filename,
+                    "mimeType": attachment["mimeType"],
+                    "size": attachment["size"],
+                    "saved": dest_path
+                })
+            }
+        },
     };
     emit(&result, machine)
+}
+
+/// Match an attachment by ID (exact) or filename, requiring an unambiguous
+/// filename match the same way `issue transition` requires an unambiguous
+/// transition match.
+fn find_attachment<'a>(attachments: &'a [Value], id_or_filename: &str) -> Result<&'a Value> {
+    if let Some(attachment) = attachments
+        .iter()
+        .find(|attachment| attachment["id"].as_str() == Some(id_or_filename))
+    {
+        return Ok(attachment);
+    }
+    let matches: Vec<&Value> = attachments
+        .iter()
+        .filter(|attachment| attachment["filename"].as_str() == Some(id_or_filename))
+        .collect();
+    match matches.as_slice() {
+        [single] => Ok(single),
+        [] => bail!(
+            "No attachment matches \"{id_or_filename}\". Run `issue attachment list` to see available attachment IDs and filenames."
+        ),
+        _ => {
+            let choices = matches
+                .iter()
+                .map(|attachment| {
+                    format!(
+                        "{} (ID: {})",
+                        attachment["filename"].as_str().unwrap_or("unknown"),
+                        attachment["id"].as_str().unwrap_or("unknown")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("Filename \"{id_or_filename}\" is ambiguous: {choices}. Use the attachment ID instead.")
+        }
+    }
 }
 
 fn set_issue_flag(jira: &Jira, key: &str, flagged: bool) -> Result<Value> {
@@ -1346,20 +1444,29 @@ fn issue_markdown(issue: &Value, server: &str) -> Result<String> {
     let description = &issue["fields"]["description"];
     if !description.is_null() {
         output.push_str("\n## Description\n\n");
+        let mut rendered = String::new();
         if let Some(text) = description.as_str() {
-            output.push_str(text);
+            rendered.push_str(text);
         } else if description["type"] == "doc" {
             let blocks = description["content"]
                 .as_array()
                 .context("Invalid ADF description: missing content")?;
             for block in blocks {
-                output.push_str(&adf_text(block)?);
-                output.push_str("\n\n");
+                rendered.push_str(&adf_text(block)?);
+                rendered.push_str("\n\n");
             }
         } else {
             bail!("Unsupported issue description format for markdown output");
         }
+        let has_media = rendered.contains("[media]");
+        output.push_str(&rendered);
         output.push('\n');
+        if has_media {
+            output.push_str(&format!(
+                "\n_Inline images are rendered as \"[media]\". Run `jira issue attachment list {key}` \
+                 and `jira issue attachment download {key} <id>` to view them._\n"
+            ));
+        }
     }
     Ok(output.trim_end().to_string() + "\n")
 }
@@ -1842,7 +1949,7 @@ mod tests {
     }
 
     #[test]
-    fn skills_list_reports_only_packaged_skill_metadata() {
+    fn skills_commands_parse_list_show_and_install() {
         let cli = Cli::try_parse_from(["jira", "--json", "skills", "list"]).unwrap();
         assert!(cli.json);
         assert!(matches!(
@@ -1852,14 +1959,26 @@ mod tests {
             }
         ));
 
-        let catalog = packaged_skills();
-        assert_eq!(catalog["skills"][0]["name"], "jira-rust-candidate");
-        assert_eq!(catalog["skills"][0]["distribution"], "packaged");
-        assert_eq!(
-            catalog["skills"][0]["install_command"],
-            "jira install-skill"
+        let show = Cli::try_parse_from(["jira", "skills", "show", "jira"]).unwrap();
+        assert!(
+            matches!(show.command, Command::Skills { command: SkillsCommand::Show { ref name } } if name == "jira")
         );
-        assert!(catalog["skills"][0].get("available").is_none());
+
+        let install = Cli::try_parse_from([
+            "jira", "skills", "install", "--target", "opencode", "--force",
+        ])
+        .unwrap();
+        assert!(
+            matches!(install.command, Command::Skills { command: SkillsCommand::Install { ref targets, force: true } } if targets == &[skills::SkillTarget::Opencode])
+        );
+
+        let bundled = skills::discover()
+            .unwrap()
+            .into_iter()
+            .find(|skill| skill.bundled)
+            .unwrap();
+        assert_eq!(bundled.name, "jira");
+        assert!(bundled.description.contains("Jira"));
     }
 
     #[test]
@@ -2389,19 +2508,25 @@ mod tests {
     fn install_skill_refuses_overwrite_and_uses_packaged_text() {
         let directory = tempfile::tempdir().unwrap();
         let dest = directory.path().join("skills/jira");
-        let path = install_skill(&dest, false).unwrap();
+        let path = skills::install_to_directory(&dest, false).unwrap();
         assert!(fs::read_to_string(&path).unwrap().contains("Jira"));
-        assert!(install_skill(&dest, false).is_err());
-        install_skill(&dest, true).unwrap();
+        assert!(skills::install_to_directory(&dest, false).is_err());
+        skills::install_to_directory(&dest, true).unwrap();
     }
 
     #[test]
-    fn install_skill_defaults_to_rust_specific_skill_directory() {
-        let cli = Cli::try_parse_from(["jira", "install-skill"]).unwrap();
-        let Command::InstallSkill { dest, .. } = cli.command else {
-            panic!("expected install-skill command");
+    fn skills_install_defaults_to_all_agent_targets() {
+        let cli = Cli::try_parse_from(["jira", "skills", "install"]).unwrap();
+        let Command::Skills {
+            command: SkillsCommand::Install { targets, .. },
+        } = cli.command
+        else {
+            panic!("expected skills install command");
         };
-        assert_eq!(dest, PathBuf::from("./.claude/skills/jira-rust-candidate"));
+        assert!(
+            targets.is_empty(),
+            "empty targets means all supported agents"
+        );
     }
 
     #[test]
@@ -2488,5 +2613,85 @@ mod tests {
         assert!(request.contains("\"summary\":\"Spec\""));
         assert!(request.contains("\"relationship\":\"references\""));
         assert!(request.contains("\"url16x16\":\"https://example.com/icon.png\""));
+    }
+
+    #[test]
+    fn find_attachment_matches_by_id_then_unambiguous_filename() {
+        let attachments = vec![
+            json!({"id": "10050", "filename": "screenshot.png"}),
+            json!({"id": "10051", "filename": "log.txt"}),
+        ];
+        assert_eq!(
+            find_attachment(&attachments, "10050").unwrap()["id"],
+            "10050"
+        );
+        assert_eq!(
+            find_attachment(&attachments, "log.txt").unwrap()["id"],
+            "10051"
+        );
+    }
+
+    #[test]
+    fn find_attachment_rejects_no_match_or_ambiguous_filename() {
+        let attachments = vec![
+            json!({"id": "10050", "filename": "screenshot.png"}),
+            json!({"id": "10051", "filename": "screenshot.png"}),
+        ];
+        let missing = find_attachment(&attachments, "99999").unwrap_err();
+        assert!(missing.to_string().contains("No attachment matches"));
+
+        let ambiguous = find_attachment(&attachments, "screenshot.png").unwrap_err();
+        assert!(ambiguous.to_string().contains("is ambiguous"));
+    }
+
+    #[test]
+    fn issue_attachment_list_returns_attachment_metadata() {
+        let cli = Cli::try_parse_from(["jira", "issue", "attachment", "list", "TEST-1"]).unwrap();
+        let Command::Issue { command } = cli.command else {
+            panic!("expected issue command");
+        };
+        let attachments = json!({"fields": {"attachment": [
+            {"id": "10050", "filename": "screenshot.png", "mimeType": "image/png", "size": 1024}
+        ]}});
+        let (server, captured, thread) = fixture(vec![(200, attachments)]);
+        issue(&command, configured_client(server), true).unwrap();
+        thread.join().unwrap();
+        let requests = captured.lock().unwrap();
+        assert!(requests[0].starts_with("GET /rest/api/3/issue/TEST-1?fields=attachment "));
+    }
+
+    #[test]
+    fn issue_attachment_download_rejects_a_content_url_on_a_different_host() {
+        let cli =
+            Cli::try_parse_from(["jira", "issue", "attachment", "download", "TEST-1", "10050"])
+                .unwrap();
+        let Command::Issue { command } = cli.command else {
+            panic!("expected issue command");
+        };
+        let attachments = json!({"fields": {"attachment": [
+            {"id": "10050", "filename": "screenshot.png", "mimeType": "image/png",
+             "size": 1024, "content": "https://evil.example.com/steal"}
+        ]}});
+        let (server, _captured, thread) = fixture(vec![(200, attachments)]);
+        let error = issue(&command, configured_client(server), true).unwrap_err();
+        assert!(error.to_string().contains("Refusing to download"));
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn issue_attachment_download_fails_clearly_when_attachment_is_unknown() {
+        let cli =
+            Cli::try_parse_from(["jira", "issue", "attachment", "download", "TEST-1", "99999"])
+                .unwrap();
+        let Command::Issue { command } = cli.command else {
+            panic!("expected issue command");
+        };
+        let attachments = json!({"fields": {"attachment": [
+            {"id": "10050", "filename": "screenshot.png"}
+        ]}});
+        let (server, _captured, thread) = fixture(vec![(200, attachments)]);
+        let error = issue(&command, configured_client(server), true).unwrap_err();
+        assert!(error.to_string().contains("No attachment matches"));
+        thread.join().unwrap();
     }
 }
