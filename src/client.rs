@@ -133,22 +133,8 @@ impl Jira {
         if !status.is_success() {
             let detail = serde_json::from_str::<Value>(&text)
                 .ok()
-                .map(|value| {
-                    let messages = value["errorMessages"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(Value::as_str)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default();
-                    if !messages.is_empty() {
-                        messages
-                    } else {
-                        value["errors"].to_string()
-                    }
-                })
+                .map(|value| jira_error_detail(&value))
+                .filter(|detail| !detail.is_empty())
                 .unwrap_or_else(|| format!("HTTP {status}"));
             let message = format!("Jira returned HTTP {status}: {detail}");
             if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
@@ -589,6 +575,40 @@ impl Jira {
     }
 }
 
+fn jira_error_detail(value: &Value) -> String {
+    let mut details = value["errorMessages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    if let Some(errors) = value["errors"].as_object() {
+        details.extend(
+            errors
+                .iter()
+                .map(|(field, message)| format!("{field}: {message}")),
+        );
+    }
+    if !details.is_empty() {
+        return details.join(", ");
+    }
+
+    ["message", "detail", "error", "code"]
+        .iter()
+        .filter_map(|key| value[*key].as_str().map(|message| (*key, message)))
+        .map(|(key, message)| {
+            if key == "message" {
+                message.to_owned()
+            } else {
+                format!("{key}: {message}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn encoded(value: &str) -> String {
     let mut result = String::new();
     for byte in value.bytes() {
@@ -852,6 +872,24 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::thread;
+
+    fn has_adf_node_type(value: &Value, expected: &str) -> bool {
+        value["type"].as_str() == Some(expected)
+            || value
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|nodes| nodes.iter().any(|node| has_adf_node_type(node, expected)))
+    }
+
+    fn has_adf_mark(value: &Value, expected: &str) -> bool {
+        value["marks"]
+            .as_array()
+            .is_some_and(|marks| marks.iter().any(|mark| mark["type"] == expected))
+            || value
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|nodes| nodes.iter().any(|node| has_adf_mark(node, expected)))
+    }
 
     struct Reply {
         request: &'static str,
@@ -1222,6 +1260,28 @@ mod tests {
         assert_eq!(client.version(), 3);
         server.join().unwrap();
     }
+
+    #[test]
+    fn failed_comment_write_surfaces_jira_field_validation_details() {
+        let (client, server) = fixture(vec![reply(
+            "POST /rest/api/3/issue/ABC-1/comment HTTP/1.1",
+            "400 Bad Request",
+            r#"{"errorMessages":["Comment body is invalid"],"errors":{"body":"unsupported node"}}"#,
+        )]);
+        let payload = json!({"body": markdown_to_adf("**Heading**\n\n1. Item with `code`")});
+
+        let error = client
+            .write(
+                reqwest::Method::POST,
+                "/issue/ABC-1/comment",
+                Some(&payload),
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Comment body is invalid"));
+        assert!(error.to_string().contains("unsupported node"));
+        server.join().unwrap();
+    }
     #[test]
     fn encodes_path_segments() {
         assert_eq!(encoded("a/b ?"), "a%2Fb%20%3F");
@@ -1244,6 +1304,37 @@ mod tests {
         assert_eq!(content[1]["content"][4]["marks"][0]["type"], "code");
         assert_eq!(content[2]["type"], "bulletList");
         assert_eq!(content[2]["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn markdown_to_adf_handles_reported_multiline_comment_body() {
+        let comment = "Implementation plan\n\nBased on the Mercury till implementation (ModalDecline09, basket.attended.age-restriction.tsx, ProductTileNotificationLabel), tobacco age verification is a subtype of the existing AGE_RESTRICTION restriction (`subType: 'TOBACCO'`), with a backend-supplied `dateOfBirthCutoff` date rather than a client-calculated value. To match this in RAP, we plan to:\n\n1. **Schema** — add `subType: 'TOBACCO'` (optional) and `dateOfBirthCutoff` (ISO date, optional) to the age-restriction schemas (customerOrderBasket/customerOrderOrder) and the Intervention type.\n2. **Mapping** — pass subType/dateOfBirthCutoff through from the basket/order restriction data into the RAP intervention model.\n3. **Approval modal (InterventionPanel)** — when subType === 'TOBACCO':\n   - Header: \"Age verification required\"\n   - Message: \"Decline '09. No ID no sale.\"\n   - Underlying text: \"Date of birth must be before {dateOfBirthCutoff}\" (formatted dd/MM/yyyy, e.g. 01/01/2009), using the backend-supplied cutoff date — not the existing calculateValidDob client calculation.\n   - CTA remains Approve only (no Reject, consistent with current RAP behaviour).\n   - Non-tobacco age restrictions are unaffected and keep the existing \"Think 25\" / {age}+ age verification required flow.\n4. **Preceding-screen banner (InterventionColumn)** — when subType === 'TOBACCO', show \"Verify: Decline '09\" instead of \"Verify age: {age}+.\"\n5. **Tests/stories** — add a tobacco intervention factory variant, a new Storybook story, and test coverage for both the modal copy and the banner text.\n\nWill update this ticket once the change is implemented and ready for review.";
+        let adf = markdown_to_adf(comment);
+        let blocks = adf["content"].as_array().unwrap();
+
+        assert_eq!(adf["type"], "doc");
+        assert_eq!(blocks[0]["type"], "paragraph");
+        assert_eq!(blocks[2]["type"], "orderedList");
+        assert_eq!(blocks[2]["content"].as_array().unwrap().len(), 5);
+        assert_eq!(blocks[2]["content"][0]["type"], "listItem");
+        let ordered = blocks
+            .iter()
+            .find(|block| block["type"] == "orderedList")
+            .expect("ordered plan list should be represented as an ADF orderedList");
+        assert_eq!(ordered["content"].as_array().unwrap().len(), 5);
+        assert!(has_adf_node_type(&ordered["content"][2], "bulletList"));
+        assert!(has_adf_mark(&adf, "code"));
+
+        let serialized = adf.to_string();
+        for expected in [
+            "subType: 'TOBACCO'",
+            "dateOfBirthCutoff",
+            "Decline '09. No ID no sale.",
+            "Age verification required",
+            "Verify: Decline '09",
+        ] {
+            assert!(serialized.contains(expected), "ADF lost {expected:?}");
+        }
     }
 
     #[test]

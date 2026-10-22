@@ -32,6 +32,19 @@ Use the full-path Rust `jira --help` and `<command> --help` for exact options. R
 | `install-skill` | Copy the bundled Jira skill to an explicit directory |
 | `completions` | Generate shell completions for Bash, Elvish, Fish, PowerShell, or Zsh |
 
+Use the global `--json` flag for structured output, including comments. The
+Rust CLI does not use the npm CLI's `--format json` option:
+
+```sh
+jira --json issue comment list PROJ-123
+jira issue comment add PROJ-123 --file ./comment.md
+```
+
+Comment bodies may be supplied as Markdown through a positional argument or
+`--file`; use a file for multiline text to avoid shell-quoting problems. If Jira
+rejects a comment, the CLI reports `errorMessages` and field-level `errors`
+when present. It does not retain failed response bodies for later inspection.
+
 ```sh
 jira --json issue list --project PROJ --limit 20
 jira --json issue view PROJ-123

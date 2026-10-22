@@ -1795,6 +1795,17 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
+    fn has_adf_node_type(value: &Value, expected: &str) -> bool {
+        value["type"].as_str() == Some(expected)
+            || value["marks"]
+                .as_array()
+                .is_some_and(|marks| marks.iter().any(|mark| mark["type"] == expected))
+            || value
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|nodes| nodes.iter().any(|node| has_adf_node_type(node, expected)))
+    }
+
     fn fixture(
         responses: Vec<(u16, Value)>,
     ) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
@@ -2455,6 +2466,37 @@ mod tests {
     }
 
     #[test]
+    fn reported_comment_body_is_posted_as_adf_with_ordered_and_nested_lists() {
+        let (server, captured, thread) = fixture(vec![(201, json!({"id": "11"}))]);
+        let body = "Implementation plan\n\nBased on the Mercury till implementation, tobacco age verification uses (`subType: 'TOBACCO'`) and `dateOfBirthCutoff`.\n\n1. **Schema** — add optional `subType: 'TOBACCO'` and `dateOfBirthCutoff`.\n2. **Mapping** — pass data through.\n3. **Approval modal** — when tobacco:\n   - Header: \"Age verification required\"\n   - Message: \"Decline '09. No ID no sale.\"\n   - CTA remains Approve.\n4. **Banner** — show \"Verify: Decline '09\".\n5. **Tests/stories** — add coverage.\n\nWill update this ticket once implemented.";
+        let response = comment(
+            &configured_client(server),
+            &CommentCommand::Add {
+                key: "TEST-1".into(),
+                text: Some(body.into()),
+                file: None,
+                internal: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response["id"], "11");
+        thread.join().unwrap();
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("POST /rest/api/3/issue/TEST-1/comment "));
+        let request_body = requests[0].split("\r\n\r\n").nth(1).unwrap();
+        let payload: Value = serde_json::from_str(request_body).unwrap();
+        let adf = &payload["body"];
+        assert_eq!(adf["type"], "doc");
+        assert!(has_adf_node_type(adf, "orderedList"));
+        assert!(has_adf_node_type(adf, "bulletList"));
+        assert!(has_adf_node_type(adf, "code"));
+        assert!(adf.to_string().contains("Decline '09. No ID no sale."));
+        assert!(adf.to_string().contains("Age verification required"));
+    }
+
+    #[test]
     fn internal_comment_without_text_does_not_post() {
         let (server, captured, thread) = fixture(vec![]);
         let error = comment(
@@ -2587,6 +2629,18 @@ mod tests {
             "**Rich** comment with [link](https://example.com)"
         );
         assert_eq!(rendered["startAt"], 0);
+    }
+
+    #[test]
+    fn comment_list_json_is_the_structured_output_form() {
+        let cli =
+            Cli::try_parse_from(["jira", "issue", "comment", "list", "TILLUI2-4695", "--json"])
+                .unwrap();
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Command::Issue { command } if matches!(*command, IssueCommand::Comment { command: CommentCommand::List { .. } })
+        ));
     }
 
     #[test]

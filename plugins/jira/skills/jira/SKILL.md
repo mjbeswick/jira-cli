@@ -64,6 +64,26 @@ jira --json sprint boards
 jira --json sprint list --board 12 --state active
 ```
 
+For structured comments use the global `--json` flag; Rust does not accept the
+npm CLI's `--format json` option. Listing comments returns Jira's comment object
+including IDs and ADF bodies:
+
+```sh
+jira --json issue comment list TILLUI2-4695
+```
+
+Public comments accept Markdown either as a positional argument or a UTF-8 file.
+Use a file for multiline content to avoid shell-quoting problems:
+
+```sh
+jira issue comment add PROJ-123 --file ./comment.md
+```
+
+On an HTTP error, the CLI reports Jira's `errorMessages` and field-level
+`errors` when Jira supplies them, without logging authentication headers or
+credentials. Error response bodies are not retained for later retrieval, so
+capture the error output from the failing command itself.
+
 ## Create and update safely
 
 Before creating, check for duplicates and discover project/type-specific fields:
